@@ -4,14 +4,28 @@ Analyze a local operations video with person detection, tracking, and pose estim
 
 ## Run locally
 
-Python 3.10 or newer is required. From this folder:
+Python 3.10 or newer is required. On Apple Silicon or Linux, from this folder:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-streamlit run app.py
+python -m streamlit run app.py
 ```
+
+### Intel Mac setup
+
+Your Mac is Intel (`x86_64`). PyTorch stopped publishing Intel macOS wheels after 2.2; Python 3.12 with PyTorch 2.2.2 and TorchVision 0.17.2 is the compatible wheel set used here. Install the Python 3.12 universal2 package from [python.org](https://www.python.org/downloads/release/python-31210/) (3.12.10 was the last 3.12 release with a macOS installer), then open a new terminal and run:
+
+```bash
+python3.12 -m venv .venv-intel
+source .venv-intel/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-intel-mac.txt
+python -m streamlit run app.py
+```
+
+The Intel-specific requirements pin PyTorch and TorchVision to their compatible versions and keep NumPy below 2. The Python 3.12 universal2 installer supports both Intel and Apple Silicon Macs. See the [PyTorch macOS x86_64 support notice](https://dev-discuss.pytorch.org/t/pytorch-macos-x86-builds-deprecation-starting-january-2024/1690) and the [PyTorch 2.2.2 wheels](https://pypi.org/project/torch/2.2.2/).
 
 The first analysis downloads the `yolo26n-pose.pt` model weights. In the app, select `unloding.mp4` or upload a video, draw and save both zones, then process it. Results are saved to `data/worksight.sqlite3`; the annotated video is saved under `data/processed/`.
 
