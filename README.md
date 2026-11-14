@@ -18,12 +18,15 @@ python -m streamlit run app.py
 Your Mac is Intel (`x86_64`). PyTorch stopped publishing Intel macOS wheels after 2.2; Python 3.12 with PyTorch 2.2.2 and TorchVision 0.17.2 is the compatible wheel set used here. Install the Python 3.12 universal2 package from [python.org](https://www.python.org/downloads/release/python-31210/) (3.12.10 was the last 3.12 release with a macOS installer), then open a new terminal and run:
 
 ```bash
+python3.12 --version
 python3.12 -m venv .venv-intel
-source .venv-intel/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements-intel-mac.txt
-python -m streamlit run app.py
+./.venv-intel/bin/python -c 'import platform, sys; print(sys.version); print(platform.machine())'
+./.venv-intel/bin/python -m pip install --upgrade pip
+./.venv-intel/bin/python -m pip install -r requirements-intel-mac.txt
+./.venv-intel/bin/python -m streamlit run app.py
 ```
+
+The version check should show Python 3.12 and `x86_64`. If `python3.12 --version` fails, install the Python 3.12 package first. Do not reuse a virtual environment created with Python 3.13.
 
 The Intel-specific requirements pin PyTorch and TorchVision to their compatible versions and keep NumPy below 2. The Python 3.12 universal2 installer supports both Intel and Apple Silicon Macs. See the [PyTorch macOS x86_64 support notice](https://dev-discuss.pytorch.org/t/pytorch-macos-x86-builds-deprecation-starting-january-2024/1690) and the [PyTorch 2.2.2 wheels](https://pypi.org/project/torch/2.2.2/).
 
