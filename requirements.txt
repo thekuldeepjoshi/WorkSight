@@ -1,1 +1,6 @@
-opencv-python
+ultralytics>=8.4.120
+opencv-python>=4.10
+numpy>=1.24
+streamlit>=1.53
+streamlit-drawable-canvas>=0.13,<0.14
+pandas>=2.0
