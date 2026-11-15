@@ -12,6 +12,7 @@ from PIL import Image
 from streamlit_drawable_canvas import st_canvas
 
 from WorkSight import (
+    ANALYSIS_VERSION,
     DATA_DIR,
     ROOT,
     UPLOADS_DIR,
@@ -33,7 +34,7 @@ from WorkSight import (
 st.set_page_config(page_title="WorkSight Operations", page_icon="📹", layout="wide")
 st.title("WorkSight Operations Prototype")
 st.caption(
-    "Local video analysis for worker presence and possible conveyor interactions. "
+    "Local video analysis for package flow, worker activity, bottlenecks, and safety review. "
     "Track IDs are anonymous and only apply within one video."
 )
 
@@ -42,6 +43,25 @@ st.caption(
 def cached_hash(path: str, modified_ns: int, size: int) -> str:
     del modified_ns, size
     return hash_file(Path(path))
+
+
+@st.cache_data(show_spinner=False)
+def cached_video_frame(path: str, seconds: int, modified_ns: int, size: int):
+    del modified_ns, size
+    capture = cv2.VideoCapture(path)
+    if not capture.isOpened():
+        raise ValueError(f"Could not open video: {path}")
+    try:
+        capture.set(cv2.CAP_PROP_POS_MSEC, seconds * 1000)
+        ok, frame = capture.read()
+        if not ok:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ok, frame = capture.read()
+        if not ok:
+            raise ValueError("Could not read a preview frame from this video.")
+        return frame
+    finally:
+        capture.release()
 
 
 def save_upload(uploaded_file) -> tuple[Path, str]:
@@ -153,7 +173,19 @@ with setup_tab:
         "Choose a zone, click at least three corners, then save it. "
         "You can clear and redraw a saved zone."
     )
-    frame = video_info["preview"]
+    source_stat = source_path.stat()
+    preview_second = st.slider(
+        "Preview position",
+        min_value=0,
+        max_value=max(1, int(video_info["duration_seconds"])),
+        value=min(1, max(1, int(video_info["duration_seconds"]))),
+        step=1,
+        format="%d sec",
+        help="Choose a representative video frame. The saved zone coordinates stay aligned to the full-resolution video.",
+    )
+    frame = cached_video_frame(
+        str(source_path), preview_second, source_stat.st_mtime_ns, source_stat.st_size
+    )
     height, width = frame.shape[:2]
     scale = min(900 / width, 600 / height, 1.0)
     canvas_width = max(1, round(width * scale))
@@ -196,8 +228,8 @@ with setup_tab:
                 else:
                     points = [
                         [
-                            min(1.0, max(0.0, float(item["left"]) / canvas_width)),
-                            min(1.0, max(0.0, float(item["top"]) / canvas_height)),
+                            min(1.0, max(0.0, (float(item["left"]) + float(item.get("radius", 0)) * float(item.get("scaleX", 1))) / canvas_width)),
+                            min(1.0, max(0.0, (float(item["top"]) + float(item.get("radius", 0)) * float(item.get("scaleY", 1))) / canvas_height)),
                         ]
                         for item in objects
                         if item.get("type", "").lower() == "circle"
@@ -213,12 +245,12 @@ with setup_tab:
                 st.session_state[canvas_revision_key] += 1
                 st.rerun()
     with right:
-        st.markdown("**Saved zones**")
+        st.markdown("**Saved zones on selected frame**")
         if zones:
             st.image(
-                cv2.cvtColor(preview_with_zones(frame, zones), cv2.COLOR_BGR2RGB),
-                caption="Red: conveyor · Blue: worker area",
-                use_container_width=True,
+                cv2.cvtColor(preview_with_zones(display_frame, zones), cv2.COLOR_BGR2RGB),
+                caption=f"Saved zones over the source frame at {preview_second}s · red: conveyor · blue: work area",
+                width="stretch",
             )
         else:
             st.info("Save both zones to enable processing.")
@@ -227,22 +259,41 @@ with setup_tab:
             st.write(f"{'✅' if name in zones else '⬜'} {name.replace('_', ' ').title()}: {status}")
 
 with analysis_tab:
-    st.subheader("Detect, track, and estimate activity")
+    st.subheader("Detect packages, workers, and operational cues")
+    # MediaPipe 0.10.x requires Protobuf <5, which conflicts with current
+    # Streamlit releases. Use YOLO pose wrist keypoints in the supported stack.
+    hand_landmarks_available = False
+    current_video = get_video(video_id) or {}
+    enable_package_detection = st.checkbox(
+        "Detect and track packages on the conveyor",
+        value=bool(current_video.get("package_detection_enabled", True)),
+        help="Uses Ultralytics YOLO-World. Its first run may need to download a CLIP model; if a network certificate blocks it, worker and pose analysis will still complete.",
+    )
     if not {"conveyor", "work_area"}.issubset(zones):
         st.warning("Configure and save both zones before processing this video.")
     else:
-        current_video = get_video(video_id) or {}
         signature = zone_signature(zones)
         already_current = (
             current_video.get("status") == "complete"
             and current_video.get("zone_signature") == signature
+            and current_video.get("analysis_version") == ANALYSIS_VERSION
+            and bool(current_video.get("hand_landmarks_enabled")) == hand_landmarks_available
+            and bool(current_video.get("package_detection_enabled")) == enable_package_detection
         )
         if already_current:
             st.success("This video has already been processed with the saved zones.")
+            if enable_package_detection and not current_video.get("package_detection_enabled"):
+                st.warning(
+                    "Worker and pose analysis completed, but package detection could not load its "
+                    "YOLO-World/CLIP model (often a certificate download issue). Package-flow metrics "
+                    "are unavailable for this analysis."
+                )
+        elif current_video.get("status") == "complete":
+            st.info("The saved analysis predates the current package and operational rules. Reprocess to refresh it.")
         elif current_video.get("status") == "failed" and current_video.get("error"):
             st.error(f"Last processing attempt failed: {current_video['error']}")
         min_interaction = st.slider(
-            "Minimum wrist-in-conveyor time to record an event (seconds)",
+            "Minimum hand/wrist-in-conveyor time to record a candidate (seconds)",
             min_value=0.3,
             max_value=3.0,
             value=0.7,
@@ -255,10 +306,15 @@ with analysis_tab:
             value=3.0,
             step=0.5,
         )
+        min_conveyor_presence = st.slider(
+            "Minimum person-in-conveyor-zone time for a safety review (seconds)",
+            min_value=0.2,
+            max_value=2.0,
+            value=0.5,
+            step=0.1,
+        )
         st.caption(
-            "Uses YOLO26 pose with ByteTrack. First run downloads the model weights. "
-            "A belt event means a visible wrist point was inside the conveyor zone; "
-            "it does not confirm a task."
+            "Uses YOLO26 pose and YOLO-World package detections with ByteTrack. Package-near-wrist, approach, throw, belt fullness, and staffing pressure are review candidates, not confirmed actions."
         )
         if st.button(
             "Process video" if not already_current else "Reprocess with these settings",
@@ -281,6 +337,9 @@ with analysis_tab:
                     source_name=source_name,
                     minimum_interaction_seconds=min_interaction,
                     minimum_dwell_seconds=min_dwell,
+                    minimum_conveyor_presence_seconds=min_conveyor_presence,
+                    enable_hand_landmarks=hand_landmarks_available,
+                    enable_package_detection=enable_package_detection,
                     progress=update_progress,
                 )
                 st.success(f"Analysis saved. Annotated video: {output_path}")
@@ -304,22 +363,51 @@ with report_tab:
                 file_name=f"{source_path.stem}_annotated.mp4",
                 mime="video/mp4",
             )
-        metrics = st.columns(4)
+        metrics = st.columns(3)
         metrics[0].metric("Tracked people", summary["tracked_people"])
         metrics[1].metric("Frame observations", f"{summary['observations']:,}")
-        metrics[2].metric("Possible belt interactions", summary["belt_interactions"])
-        metrics[3].metric(
+        metrics[2].metric("Wrist-zone candidates", summary["belt_interactions"])
+        metrics = st.columns(3)
+        metrics[0].metric("Hand-to-belt proximity", summary["hand_belt_proximity_events"])
+        metrics[1].metric("People in conveyor zone", summary["person_in_conveyor_zone_events"])
+        metrics[2].metric(
             "Work-area presence", f"{summary['work_area_seconds'] / 60:.1f} track-min"
         )
+        package_metrics = st.columns(2)
+        package_metrics[0].metric("Package observations", f"{summary['package_observations']:,}")
+        package_metrics[1].metric("Package observations in belt zone", f"{summary['conveyor_package_observations']:,}")
         st.caption(
-            "Track-min is summed anonymous track presence and may overlap. "
-            "It is not a productivity score. Belt interactions are candidates for review."
+            "Track-min may overlap. Package counts are approximate; four boxes is the current full-belt proxy. Throwing and package-in-hand are motion/proximity heuristics. Verify every alert in video."
         )
 
         events = get_events(video_id)
         belt_events = [
-            event for event in events if event["event_type"] == "possible_belt_interaction"
+            event for event in events
+            if event["event_type"] in {
+                "possible_belt_interaction",
+                "possible_hand_belt_proximity",
+            }
         ]
+        safety_events = [
+            event for event in events
+            if event["event_type"] == "possible_person_in_conveyor_zone"
+        ]
+        if safety_events:
+            st.subheader("Potential conveyor-zone safety reviews")
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Time": time_label(event["start_ms"]),
+                            "Track": event["track_id"],
+                            "Duration (s)": round(event["duration_ms"] / 1000, 1),
+                            "Review cue": event["details"]["rule"],
+                        }
+                        for event in safety_events
+                    ]
+                ),
+                hide_index=True,
+            )
         if belt_events:
             counts_by_minute: dict[int, int] = {}
             for event in belt_events:
@@ -344,13 +432,18 @@ with report_tab:
                     "Signal": event["event_type"].replace("_", " "),
                     "Duration (s)": round(event["duration_ms"] / 1000, 1),
                     "Confidence": round(event["confidence"], 2),
+                    "Evidence rule": event["details"].get("rule", ""),
+                    "Interpretation": event["details"].get("interpretation", ""),
                 }
                 for event in events
             ]
             st.subheader("Reviewable events")
-            st.dataframe(pd.DataFrame(event_rows), use_container_width=True, hide_index=True)
+            st.dataframe(
+                pd.DataFrame(event_rows),
+                hide_index=True,
+            )
             selected_event_id = st.selectbox(
-                "Review an event in the source video",
+                "Review an event in the annotated video",
                 [event["id"] for event in events],
                 format_func=lambda event_id: next(
                     f"{time_label(event['start_ms'])} · "
@@ -365,7 +458,12 @@ with report_tab:
                 float(current_video.get("duration_seconds") or video_info["duration_seconds"]),
                 max(event["end_ms"] / 1000 + 3.0, clip_start + 4.0),
             )
-            st.video(str(source_path), start_time=clip_start, end_time=clip_end)
+            evidence_path = output_path if output_path.is_file() else source_path
+            st.video(
+                str(evidence_path),
+                start_time=clip_start,
+                end_time=clip_end,
+            )
         else:
             st.info("No events met the current duration thresholds.")
 
@@ -377,4 +475,4 @@ with report_tab:
                 file_name=f"{source_path.stem}_events.csv",
                 mime="text/csv",
             )
-        st.caption(f"Detection, tracking, and pose observations are stored in {DATA_DIR / 'worksight.sqlite3'}.")
+        st.caption(f"Detection, tracking, pose, hand, package, and event observations are stored in {DATA_DIR / 'worksight.sqlite3'}.")

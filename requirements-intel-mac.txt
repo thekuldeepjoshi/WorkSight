@@ -1,4 +1,5 @@
 -r requirements.txt
 numpy<2
+pyarrow==20.0.0
 torch==2.2.2
 torchvision==0.17.2

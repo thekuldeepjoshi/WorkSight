@@ -1,6 +1,8 @@
 ultralytics>=8.4.120
 opencv-python>=4.10
 numpy>=1.24
-streamlit>=1.53
+streamlit>=1.61.1,<2
 streamlit-drawable-canvas>=0.13,<0.14
 pandas>=2.0
+imageio-ffmpeg>=0.8,<0.9
+sentencepiece==0.2.0; python_version < "3.13"

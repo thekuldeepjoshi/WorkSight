@@ -1,0 +1,55 @@
+:root{--ink:#1b2440;--muted:#69758c;--line:#e2e6f0;--green:#514bd3;--lime:#e8e9ff;--panel:#fff;--canvas:#f5f6fb}
+body{background:var(--canvas);color:var(--ink)}
+.sidebar,.topbar{background:#fff}
+.brand-mark{background:#ebeaff;color:#514bd3}
+.brand-dot{color:#18a999}
+.site-icon{background:#e7f7f5;color:#168c82}
+.nav-item:hover,.nav-item.selected{background:#eeedff;color:#4c47cb}
+.live-tag{background:#efefff;color:#4b4ac1}
+.live-tag i{background:#18a999}
+.green-pip{background:#18a999}
+.button.primary{background:#514bd3;border-color:#514bd3}
+.button.primary:hover{background:#433fc1;border-color:#433fc1}
+.data-notice{background:#f5f5ff;border-color:#e5e5fa}
+.notice-icon{color:#4f4bd0}
+.privacy{background:#f0faf8;border-color:#d9efeb;color:#19887e}
+.privacy svg{color:#19887e}
+.focus-icon.green{background:#eeedff;color:#514bd3}
+.focus-icon.blue{background:#e5f8f5;color:#148f83}
+.focus-icon.lilac{background:#f0edff;color:#6d5bd0}
+.focus-stat-row>div,.focus-stat-button,.ops-timeline-row.review-opportunity{background:#f5f5ff}
+.focus-stat-button:hover:not(:disabled),.focus-list-row:hover{background:#eff7f6}
+.focus-stat-row b,.focus-list-row>b,.ops-timeline-row>b{color:#343f92}
+.focus-text-button{color:#4c48c9}
+.review-opportunity-tag{background:#e8e8ff;color:#4f49c8}
+.ops-timeline-row.review-opportunity:hover,.ops-timeline-row.review-opportunity.window-selected{background:#ececff}
+.kpi-icon.mint{background:#e2f7f3;color:#168f83}
+.sparkline i{background:#c9eee8}
+.duration-line span{background:#1ba99b}
+.bars .bar-column>span{background:#4f4bd0}
+.legend-dot{background:#4f4bd0}
+.belt-dot{background:#1ba99b}
+.range-chip{background:#f0efff;color:#4f4bd0}
+.insight-symbol.blue{background:#e9f8f6;color:#138c80}
+.insight-symbol.purple{background:#f0edff;color:#6d5bd0}
+.bars .bar-column.bar-active>span{background:#1ba99b}
+.imbalance-period>b,.imbalance-coverage>b{color:#343f92}
+.imbalance-samples a{color:#3e4c9c}
+.imbalance-samples a:hover{border-color:#c8c8f0;background:#f5f5ff}
+.upload-app-shell{min-height:100vh;background:radial-gradient(ellipse at 78% 7%,#e7e8ff 0,rgba(231,232,255,0) 40%),linear-gradient(145deg,#f7f8fd,#eef8f7)}
+.upload-main{margin-left:0;min-height:100vh}
+.upload-content{max-width:820px;padding:clamp(28px,7vh,76px) 24px 40px}
+.upload-welcome{margin-bottom:18px}
+.upload-welcome .brand{margin:0 0 42px;padding:0;font-size:23px}
+.upload-welcome .eyebrow{color:#514bd3}
+.upload-welcome h1{font-size:30px;letter-spacing:-1px;color:#1b2440;margin-top:7px}
+.upload-welcome p{max-width:650px;font-size:12px;line-height:1.65;color:#6f7b91;margin-top:8px}
+.upload-gate{border-color:#dfe3f0;box-shadow:0 14px 42px rgba(43,48,104,.07)}
+.upload-return{margin-top:14px}
+.focus-area-nav a{color:#596584;border-color:#e2e6f0}
+.focus-area-nav a:hover{border-color:#c8c8f0;background:#f2f1ff;color:#4c47cb}
+.overview-tabs a:hover,.overview-tabs a.tab-active{color:#4d49ce}
+.overview-tabs a.tab-active{border-bottom-color:#514bd3}
+.focus-panel,.ops-timeline-panel{scroll-margin-top:68px}
+.button:focus-visible,.focus-text-button:focus-visible,.overview-tabs a:focus-visible,.focus-list-row:focus-visible,.risk-event-row:focus-visible{outline:2px solid #514bd3;outline-offset:2px}
+@media(max-width:700px){.upload-content{padding:28px 13px}.upload-welcome .brand{margin-bottom:30px}.upload-welcome h1{font-size:25px}}

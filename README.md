@@ -1,10 +1,10 @@
-# WorkSight Operations Prototype
+# WorkSight
 
-Analyze a local operations video with person detection, tracking, and pose estimation. Draw a conveyor zone and a work-area zone, then review anonymous track activity and possible wrist-to-conveyor interactions in a local dashboard.
+WorkSight analyzes unloading videos and turns person, pose, package, and zone detections into reviewable operational signals. Signals are estimates; confirm them in the video before acting.
 
-## Run locally
+## Run the analyzer
 
-Python 3.10 or newer is required. On Apple Silicon or Linux, from this folder:
+Python 3.10 or newer:
 
 ```bash
 python3 -m venv .venv
@@ -13,34 +13,33 @@ python -m pip install -r requirements.txt
 python -m streamlit run app.py
 ```
 
-### Intel Mac setup
-
-Your Mac is Intel (`x86_64`). PyTorch stopped publishing Intel macOS wheels after 2.2; Python 3.12 with PyTorch 2.2.2 and TorchVision 0.17.2 is the compatible wheel set used here. Install the Python 3.12 universal2 package from [python.org](https://www.python.org/downloads/release/python-31210/) (3.12.10 was the last 3.12 release with a macOS installer), then open a new terminal and run:
+For Intel Macs, use Python 3.12 and `requirements-intel-mac.txt`:
 
 ```bash
-python3.12 --version
 python3.12 -m venv .venv-intel
-./.venv-intel/bin/python -c 'import platform, sys; print(sys.version); print(platform.machine())'
-./.venv-intel/bin/python -m pip install --upgrade pip
 ./.venv-intel/bin/python -m pip install -r requirements-intel-mac.txt
 ./.venv-intel/bin/python -m streamlit run app.py
 ```
 
-The version check should show Python 3.12 and `x86_64`. If `python3.12 --version` fails, install the Python 3.12 package first. Do not reuse a virtual environment created with Python 3.13.
+Upload or select a video, draw and save the conveyor and work-area zones, then process it. Results are stored in `data/worksight.sqlite3`; annotated videos are in `data/processed/`.
 
-The Intel-specific requirements pin PyTorch and TorchVision to their compatible versions and keep NumPy below 2. The Python 3.12 universal2 installer supports both Intel and Apple Silicon Macs. See the [PyTorch macOS x86_64 support notice](https://dev-discuss.pytorch.org/t/pytorch-macos-x86-builds-deprecation-starting-january-2024/1690) and the [PyTorch 2.2.2 wheels](https://pypi.org/project/torch/2.2.2/).
+## Run the React dashboard
 
-The first analysis downloads the `yolo26n-pose.pt` model weights. In the app, select `unloding.mp4` or upload a video, draw and save both zones, then process it. Results are saved to `data/worksight.sqlite3`; the annotated video is saved under `data/processed/`.
+In another terminal:
 
-## What the signals mean
+```bash
+cd dashboard
+npm install
+npm run dev
+```
 
-- **Work-area presence**: a tracked person's bottom-center point is inside the configured work-area polygon.
-- **Possible belt interaction**: a visible left or right wrist keypoint is inside the conveyor polygon for the configured minimum time.
+Upload the exported events CSV and annotated H.264 video. The dashboard validates both files and links review signals to video timestamps.
 
-These are video-derived indicators for review. The pose model estimates body joints, not detailed hand shape, and a wrist inside a zone does not prove a specific task. Track IDs are temporary and anonymous within a video; the dashboard does not identify people or calculate a productivity score.
+The SQLite data can be queried without processing the video again:
 
-## Local data
+```bash
+python3 scripts/query_worksight.py summary
+python3 scripts/query_worksight.py timeline --window 60 --order quiet
+```
 
-The SQLite database stores per-frame bounding boxes, track IDs, pose keypoints, zone membership, and event intervals. You can query it directly with SQLite without running inference again. Uploaded source videos, the database, model weights, and annotated outputs stay in the ignored `data/` directory.
-
-Before distributing or deploying a product built with Ultralytics, review its AGPL-3.0 and Enterprise licensing options: <https://www.ultralytics.com/license>.
+Video and model files are kept locally in the ignored `data/` and `*.pt` files. Review [Ultralytics licensing](https://www.ultralytics.com/license) before distributing or deploying.
