@@ -1,5 +1,5 @@
 ---
-name: worksight-ops-analyst
+name: ws-ops
 description: Query WorkSight's local SQLite video analysis to answer operational questions about worker presence, possible conveyor interactions, activity gaps, and staffing signals. Use when a question depends on processed WorkSight video data or needs supporting video timestamps.
 ---
 

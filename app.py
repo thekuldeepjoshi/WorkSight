@@ -14,7 +14,6 @@ from streamlit_drawable_canvas import st_canvas
 from WorkSight import (
     ANALYSIS_VERSION,
     DATA_DIR,
-    ROOT,
     UPLOADS_DIR,
     delete_zone,
     ensure_video,
@@ -22,7 +21,6 @@ from WorkSight import (
     get_summary,
     get_video,
     get_zones,
-    hash_file,
     inspect_video,
     list_videos,
     process_video,
@@ -37,12 +35,6 @@ st.caption(
     "Local video analysis for package flow, worker activity, bottlenecks, and safety review. "
     "Track IDs are anonymous and only apply within one video."
 )
-
-
-@st.cache_data(show_spinner=False)
-def cached_hash(path: str, modified_ns: int, size: int) -> str:
-    del modified_ns, size
-    return hash_file(Path(path))
 
 
 @st.cache_data(show_spinner=False)
@@ -66,11 +58,13 @@ def cached_video_frame(path: str, seconds: int, modified_ns: int, size: int):
 
 def save_upload(uploaded_file) -> tuple[Path, str]:
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha256(uploaded_file.getvalue()).hexdigest()
+    content = uploaded_file.getbuffer()
+    digest = hashlib.sha256(content).hexdigest()
     safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", Path(uploaded_file.name).name)
     destination = UPLOADS_DIR / f"{digest[:12]}_{safe_name}"
     if not destination.exists():
-        destination.write_bytes(uploaded_file.getvalue())
+        with destination.open("wb") as output_file:
+            output_file.write(content)
     return destination, digest
 
 
@@ -104,12 +98,8 @@ def time_label(milliseconds: int) -> str:
     return f"{seconds // 60:02d}:{seconds % 60:02d}"
 
 
-sample_path = ROOT / "unloding.mp4"
 history = list_videos()
-source_options = []
-if sample_path.exists():
-    source_options.append("Use unloding.mp4")
-source_options.append("Upload a video")
+source_options = ["Upload a video"]
 if history:
     source_options.append("Open saved analysis")
 
@@ -118,14 +108,12 @@ source_path = None
 source_name = None
 video_id = None
 
-if source_mode == "Use unloding.mp4":
-    source_path = sample_path
-    source_name = sample_path.name
-    stat = sample_path.stat()
-    video_id = cached_hash(str(sample_path), stat.st_mtime_ns, stat.st_size)
-elif source_mode == "Upload a video":
+if source_mode == "Upload a video":
     uploaded = st.sidebar.file_uploader(
-        "Choose a video", type=["mp4", "mov", "avi", "mkv"]
+        "Choose a video",
+        type=["mp4", "mov", "avi", "mkv"],
+        max_upload_size=2048,
+        help="Video files up to 2 GB are supported.",
     )
     if uploaded is not None:
         source_path, video_id = save_upload(uploaded)
@@ -145,7 +133,7 @@ elif source_mode == "Open saved analysis":
     video_id = chosen_id
 
 if source_path is None or video_id is None:
-    st.info("Choose the sample video, upload a video, or open a saved analysis.")
+    st.info("Upload a video or open a saved analysis.")
     st.stop()
 if not source_path.is_file():
     st.error(f"The video file is no longer available: {source_path}")

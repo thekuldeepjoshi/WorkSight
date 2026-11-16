@@ -359,6 +359,34 @@ def _inside_zone(point: tuple[float, float], polygon: np.ndarray) -> bool:
     return cv2.pointPolygonTest(polygon, point, False) >= 0
 
 
+def _package_activity_signals(
+    package_detection_enabled: bool,
+    conveyor_package_count: int,
+    carrying: bool,
+    hand_signal: bool,
+    toward_package: bool,
+) -> dict[str, bool]:
+    """Classify candidate worker/package signals for one frame and track."""
+    belt_has_packages = conveyor_package_count > 0
+    working = bool(carrying or (belt_has_packages and (toward_package or hand_signal)))
+    enabled = package_detection_enabled
+    return {
+        "candidate_available_no_belt_demand": bool(enabled and not belt_has_packages and not carrying),
+        "candidate_working_with_package": bool(enabled and working),
+        "candidate_belt_bottleneck": bool(
+            enabled and belt_has_packages and not carrying and not toward_package and not hand_signal
+        ),
+        "candidate_waiting_full_belt": bool(
+            enabled and conveyor_package_count >= 4 and not hand_signal and not carrying
+        ),
+    }
+
+
+def _staffing_pressure(package_count: int, active_worker_count: int) -> bool:
+    """Return whether a frame meets the prototype staffing-pressure rule."""
+    return package_count >= 3 and active_worker_count >= 2
+
+
 def _insert_event(
     event_batch: list[tuple],
     video_id: str,
@@ -394,7 +422,7 @@ def _insert_event(
     elif event_type == "candidate_working_with_package":
         details = {"rule": "A package was estimated near the worker's wrist, or a belt package and hand-zone/approach signal co-occurred.", "interpretation": "Candidate package handling; a held item means the worker is not classified as available, even while the belt is empty."}
     elif event_type == "candidate_belt_bottleneck":
-        details = {"rule": "Package detections were in the conveyor zone without a hand-carry or approach signal for this track.", "interpretation": "Possible unloading slowdown; verify occlusion and worker-package association."}
+        details = {"rule": "One or more package detections were in the conveyor zone, and this worker had no carry, hand-zone, or approach signal.", "interpretation": "Possible unloading slowdown; verify occlusion and worker-package association."}
     elif event_type == "candidate_waiting_full_belt":
         details = {"rule": "At least four package detections were on the conveyor while this worker had no hand-zone or package-near-wrist signal.", "interpretation": "Possible waiting during high belt load; item count is a proxy, not calibrated belt occupancy."}
     elif event_type == "candidate_staffing_pressure":
@@ -831,14 +859,17 @@ def process_video(
                 else:
                     previous_worker_package_distance.pop(track_id, None)
                 hand_signal = bool(detected[track_id]["possible_hand_belt_proximity"])
-                working = bool(carrying or (belt_packages and (toward_package or hand_signal)))
-                detected[track_id]["candidate_available_no_belt_demand"] = bool(enable_package_detection and not belt_packages and not carrying)
-                detected[track_id]["candidate_working_with_package"] = bool(enable_package_detection and working)
-                detected[track_id]["candidate_belt_bottleneck"] = bool(enable_package_detection and belt_packages and not carrying and not toward_package)
-                detected[track_id]["candidate_waiting_full_belt"] = bool(enable_package_detection and len(belt_packages) >= 4 and not hand_signal and not carrying)
-                if working:
+                package_signals = _package_activity_signals(
+                    enable_package_detection,
+                    len(belt_packages),
+                    carrying,
+                    hand_signal,
+                    toward_package,
+                )
+                detected[track_id].update(package_signals)
+                if carrying or (belt_packages and (toward_package or hand_signal)):
                     active_worker_ids.add(track_id)
-            if len(belt_packages) >= 3 and len(active_worker_ids) >= 2:
+            if _staffing_pressure(len(belt_packages), len(active_worker_ids)):
                 for worker_id in active_worker_ids:
                     detected[worker_id]["candidate_staffing_pressure"] = True
 
