@@ -2,6 +2,37 @@
 
 WorkSight turns unloading videos into a local operations dashboard. It uses React, Flask, SQLite, YOLO pose, MediaPipe Hands, and YOLO-World package detection. Throughput and calibrated conveyor capacity are not measured yet; safety and slowdown signals are review candidates.
 
+## Application architecture
+
+```text
+User uploads video
+        |
+        v
+React dashboard  <---->  Flask API
+                              |
+                              v
+                    Background processing worker
+                       |       |        |
+                    YOLO    MediaPipe  YOLO-World
+                  people/pose  hands    packages
+                              |
+                              v
+                    SQLite + annotated video + CSV
+                              |
+                              v
+                    Dashboard timelines and alerts
+                              |
+                              v
+                    Claude Desktop MCP server
+```
+
+The React dashboard is the customer-facing interface. Flask receives uploads,
+manages processing jobs, and serves results. The processing worker analyzes the
+video with the computer-vision models and saves frame observations, events, and
+timestamps in SQLite. The dashboard reads those results without reprocessing
+the video. The read-only MCP server lets Claude query the same SQLite data and
+return operational answers with supporting timestamps.
+
 ## Requirements
 
 Local setup needs Python 3.12, Node.js 20+, npm, and these model files in the project root:
