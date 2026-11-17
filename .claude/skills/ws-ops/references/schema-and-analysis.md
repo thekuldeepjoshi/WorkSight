@@ -3,10 +3,12 @@
 The database is `data/worksight.sqlite3`. Use SQLite read-only. Its primary tables are:
 
 - `videos`: video ID, source name/path, processing status, duration, and annotated output path.
+- `runs`: ID matching a `videos` analysis record, `source_video_id` pointing at the original upload, status, progress, error and timestamps. Each processing run has a separate analysis record; use its ID for evidence queries.
 - `zones`: normalized polygon points for `conveyor` and `work_area`.
 - `detections`: one person observation per frame; `frame_index`, `timestamp_ms`, temporary `track_id`, person box confidence, bounding box and pose JSON, plus `in_work_area` and `wrist_on_belt` flags.
 - `hand_detections`: per-frame MediaPipe hand observations linked to a person track when possible. `landmarks_json` contains 21 normalized hand landmarks; `fingertips_in_conveyor` flags a fingertip inside the configured conveyor polygon; `handedness_confidence` describes left/right classification confidence.
 - `events`: contiguous intervals for work-area presence, pose-wrist proximity, fingertip proximity, and person entry into the conveyor zone, with start/end milliseconds, duration, evidence frame, detector confidence, and a JSON explanation.
+- `package_detections`: per-frame package boxes, class, confidence, temporary package track ID and conveyor-zone flag. Count distinct nonnegative track IDs for package tracks; row counts are repeated observations. Neither measures throughput.
 
 ## What the flags mean
 

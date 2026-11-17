@@ -1,13 +1,14 @@
 """Application paths and analysis-wide constants."""
 
 from pathlib import Path
+import os
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT / "data"
+DATA_DIR = Path(os.environ.get("WORKSIGHT_DATA_DIR", ROOT / "data")).resolve()
 UPLOADS_DIR = DATA_DIR / "uploads"
 PROCESSED_DIR = DATA_DIR / "processed"
-DB_PATH = DATA_DIR / "worksight.sqlite3"
+DB_PATH = Path(os.environ.get("WORKSIGHT_DB", DATA_DIR / "worksight.sqlite3")).resolve()
 
 # Increment when the processing rules change, forcing a clean reprocess.
 ANALYSIS_VERSION = 8

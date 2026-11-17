@@ -98,10 +98,17 @@ def summary(db: sqlite3.Connection, video: sqlite3.Row) -> None:
         ).fetchone()[0]
     package_observations = 0
     conveyor_package_observations = 0
+    package_tracks = 0
+    conveyor_package_tracks = 0
     if table_exists(db, "package_detections"):
         package_observations, conveyor_package_observations = db.execute(
             """SELECT COUNT(*), SUM(in_conveyor_zone) FROM package_detections
                WHERE video_id = ?""", (video_id,)
+        ).fetchone()
+        package_tracks, conveyor_package_tracks = db.execute(
+            """SELECT COUNT(DISTINCT CASE WHEN track_id >= 0 THEN track_id END),
+                      COUNT(DISTINCT CASE WHEN track_id >= 0 AND in_conveyor_zone=1 THEN track_id END)
+               FROM package_detections WHERE video_id=?""", (video_id,)
         ).fetchone()
     json_print({
         "video": {
@@ -116,6 +123,9 @@ def summary(db: sqlite3.Connection, video: sqlite3.Row) -> None:
         "person_frame_observations": observations,
         "hand_frame_observations": hand_observations,
         "tracked_package_observations": package_observations,
+        "unique_package_tracks": package_tracks,
+        "unique_package_tracks_in_conveyor_zone": conveyor_package_tracks,
+        "package_detection_enabled": bool(video["package_detection_enabled"]),
         "package_observations_in_conveyor_zone": conveyor_package_observations or 0,
         "events_by_type": [dict(row) for row in by_type],
         "configured_zones": [dict(row) for row in zones],
@@ -283,7 +293,7 @@ def main() -> int:
         ("imbalances", "Find same-frame presence/activity mismatch windows"),
     ):
         command = sub.add_parser(name, help=help_text)
-        command.add_argument("--video-id", help="Video ID; defaults to latest complete video")
+        command.add_argument("--video-id", "--run-id", dest="video_id", help="Analysis/run ID; defaults to latest completed run")
         if name == "events":
             command.add_argument(
                 "--event-type",
@@ -297,6 +307,8 @@ def main() -> int:
                     "candidate_belt_bottleneck",
                     "candidate_waiting_full_belt",
                     "candidate_staffing_pressure",
+                    "candidate_low_activity",
+                    "candidate_staffing_mismatch",
                     "possible_throwing_risk",
                     "work_area_presence",
                 ),

@@ -10,7 +10,7 @@ Use this skill to answer operations questions from processed WorkSight data in t
 ## Query the processed data
 
 1. Locate `data/worksight.sqlite3`. If it is unavailable, say what data is missing; do not invent results.
-2. List videos, select the relevant complete video, and pass its ID to every subsequent query:
+2. List videos, select the relevant completed analysis, and pass its ID to every subsequent query. Each new processing run gets a separate analysis/video ID; `--run-id` is an alias for `--video-id`. Never combine runs:
 
    ```bash
    python3 scripts/query_worksight.py --db data/worksight.sqlite3 videos
@@ -39,7 +39,8 @@ Use this skill to answer operations questions from processed WorkSight data in t
 - `possible_throwing_risk` means a package track moved rapidly near an estimated wrist. It is a motion heuristic and must be checked in the video.
 - `in_work_area=1` means the tracked person's footpoint was inside the configured work-area polygon. This is **presence**, not proof they were working or idle.
 - To find “three present but one showing candidate activity,” compare distinct track IDs **within the same frame**: `in_work_area=1` versus `wrist_on_belt=1` or a matching `hand_detections.fingertips_in_conveyor=1` row. Aggregate qualifying frames into short windows and report both the frame count and share of tracked-person observation frames. Frames without a tracked person are excluded from that denominator.
-- Package detections use YOLO-World at approximately 3 frames per second and can miss or mislabel objects. Belt counts are not calibrated occupancy, and the package-hand/approach association is heuristic. Do not call a belt clear, full, or backed up without reviewing representative clips.
+- Package detections use YOLO-World on every sampled analysis frame and can miss or mislabel objects. Summary includes nonnegative unique package track IDs separately from repeated frame observations. Tracks are not verified parcels or completed unloads. Belt counts are not calibrated occupancy; review representative clips.
+- A fresh database after explicit reset contains no analyses until a new video is processed. Dashboard CSV imports do not populate raw frame evidence in SQLite.
 - Completed throughput, calibrated belt occupancy/capacity, task quality, and required staffing are not directly measured. Treat the new candidate events as review signals, not verified operations facts.
 - IDs are anonymous and temporary within a video. `events.confidence` is person detector confidence, not confidence that an activity interpretation is correct.
 - Consider zone placement, duration thresholds, missed detections, occlusion, frame coverage, and tracker ID changes when interpreting signals.

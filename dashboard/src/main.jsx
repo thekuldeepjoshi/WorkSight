@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Activity, Bell, ChevronDown, CircleHelp, Download, Factory, FileUp,
@@ -6,61 +6,7 @@ import {
 } from 'lucide-react';
 import './styles.css';
 import './theme.css';
-function parseCSV(text) {
-  const rows = [];
-  let row = [], cell = '', quoted = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const char = text[i];
-    if (char === '"' && quoted && text[i + 1] === '"') { cell += '"'; i += 1; }
-    else if (char === '"') quoted = !quoted;
-    else if (char === ',' && !quoted) { row.push(cell.trim()); cell = ''; }
-    else if ((char === '\n' || char === '\r') && !quoted) {
-      if (char === '\r' && text[i + 1] === '\n') i += 1;
-      row.push(cell.trim());
-      if (row.some(Boolean)) rows.push(row);
-      row = []; cell = '';
-    } else cell += char;
-  }
-  row.push(cell.trim());
-  if (row.some(Boolean)) rows.push(row);
-  if (quoted) return { error: 'CSV contains an unclosed quotation mark. Export it again from WorkSight.' };
-  if (rows.length < 2) return { error: 'The CSV has no event rows. Export the reviewable events from WorkSight.' };
-  const headers = rows.shift().map((h) => h.replace(/^\uFEFF/, '').toLowerCase());
-  const at = (...names) => names.map((name) => headers.indexOf(name)).find((i) => i !== -1);
-  const timeAt = at('time', 'timestamp', 'start time', 'start');
-  const trackAt = at('track', 'track id');
-  const signalAt = at('signal', 'event type', 'event');
-  const durationAt = at('duration (s)', 'duration', 'duration seconds');
-  const confidenceAt = at('confidence', 'score');
-  const evidenceAt = at('evidence rule', 'evidence', 'rule');
-  const interpretationAt = at('interpretation', 'why it matters');
-  if ([timeAt, trackAt, signalAt, durationAt, confidenceAt].some((i) => i === undefined)) {
-    return { error: 'CSV columns do not match WorkSight export. Required: Time, Track, Signal, Duration (s), Confidence.' };
-  }
-  const parsed = [];
-  for (let i = 0; i < rows.length; i += 1) {
-    const cells = rows[i];
-    const stamp = cells[timeAt] || '';
-    const bits = stamp.split(':').map(Number);
-    if (![2, 3].includes(bits.length) || bits.some((n) => !Number.isInteger(n) || n < 0) || bits.at(-1) >= 60 || (bits.length === 3 && bits[1] >= 60)) {
-      return { error: `Invalid event time on CSV row ${i + 2}: “${stamp}”. Use mm:ss or hh:mm:ss.` };
-    }
-    const seconds = bits.length === 3 ? bits[0] * 3600 + bits[1] * 60 + bits[2] : bits[0] * 60 + bits[1];
-    const signal = (cells[signalAt] || '').toLowerCase().replaceAll('_', ' ').trim();
-    if (!signal) return { error: `Missing signal on CSV row ${i + 2}.` };
-    const duration = Number(cells[durationAt]);
-    let confidence = Number((cells[confidenceAt] || '').replace('%', ''));
-    if (cells[confidenceAt]?.includes('%')) confidence /= 100;
-    else if (confidence > 1 && confidence <= 100) confidence /= 100;
-    if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
-      return { error: `Invalid duration or confidence on CSV row ${i + 2}.` };
-    }
-    if (!cells[trackAt]) return { error: `Missing track ID on CSV row ${i + 2}.` };
-    parsed.push({ id: i + 1, label: stamp, seconds, track: cells[trackAt], signal, duration, confidence, evidence: evidenceAt === undefined ? '' : (cells[evidenceAt] || ''), interpretation: interpretationAt === undefined ? '' : (cells[interpretationAt] || '') });
-  }
-  return parsed.length ? { events: parsed.sort((a, b) => a.seconds - b.seconds) } : { error: 'No valid events were found in this CSV.' };
-}
-
+import Workspace from './Workspace';
 const EVENT_PRESENTATION = {
   'candidate available no belt demand': {
     label: 'Idle / available candidate', type: 'worker',
@@ -153,6 +99,8 @@ function App() {
   const [videoUrl, setVideoUrl] = useState('');
   const [videoSeconds, setVideoSeconds] = useState(0);
   const [csvName, setCsvName] = useState('');
+  const [analysisLoaded, setAnalysisLoaded] = useState(false);
+  const [csvDownloadUrl, setCsvDownloadUrl] = useState('');
   const [csvError, setCsvError] = useState('');
   const [videoError, setVideoError] = useState('');
   const [videoValid, setVideoValid] = useState(false);
@@ -164,21 +112,10 @@ function App() {
   const [notice, setNotice] = useState('Add your WorkSight events CSV and video to load the operations report.');
   const videoRef = useRef(null);
   const topicDetailsRef = useRef(null);
-  const csvInput = useRef(null);
-  const videoInput = useRef(null);
-  const wasDataReady = useRef(false);
-  const csvValid = events.length > 0 && !csvError;
+  const csvValid = analysisLoaded && !csvError;
   const latestEventTime = events.reduce((latest, event) => Math.max(latest, event.seconds + event.duration), 0);
   const timestampsMatch = !videoValid || latestEventTime <= videoSeconds + 1;
   const dataReady = csvValid && videoValid && timestampsMatch;
-
-  useEffect(() => {
-    const becameReady = dataReady && !wasDataReady.current;
-    wasDataReady.current = dataReady;
-    if (screen === 'upload' && becameReady) {
-      setScreen('overview');
-    }
-  }, [dataReady, screen]);
 
   const activeEvent = events.find((event) => event.id === active) || null;
   const urgentSafetyEvents = events.filter((event) => event.signal === 'possible body on conveyor');
@@ -228,6 +165,14 @@ function App() {
     'possible belt interaction': 4,
   }[event.signal] ?? 5);
   const priorityEvents = [...events].sort((a, b) => (priorityRank(a) - priorityRank(b)) || (b.duration - a.duration)).slice(0, 8);
+  const manualPersonOnBeltEvent = { id: 'manual-person-336-165', seconds: 165, duration: 1, track: '336', signal: 'possible person in conveyor zone', label: '2:45', evidence: 'Manual urgent safety review marker', manual: true };
+  const personOnBeltEvents = [...events.filter((event) => ['possible person in conveyor zone', 'possible body on conveyor'].includes(event.signal)), manualPersonOnBeltEvent].sort((a, b) => a.seconds - b.seconds || b.duration - a.duration);
+  const personOnBeltTracks = Object.values(personOnBeltEvents.reduce((groups, event) => {
+    const track = event.track || 'Unknown';
+    if (!groups[track]) groups[track] = { track, events: [] };
+    groups[track].events.push(event);
+    return groups;
+  }, {})).sort((a, b) => (String(a.track) === '336' ? -1 : String(b.track) === '336' ? 1 : 0) || b.events.length - a.events.length || b.events.reduce((sum, event) => sum + event.duration, 0) - a.events.reduce((sum, event) => sum + event.duration, 0) || String(a.track).localeCompare(String(b.track), undefined, { numeric: true })).slice(0, 10);
   const windowStart = Math.floor(reviewSecond / 30) * 30;
   const windowEnd = windowStart + 30;
   const windowEvents = events.filter((event) => event.seconds < windowEnd && event.seconds + event.duration >= windowStart);
@@ -254,27 +199,20 @@ function App() {
     setTopicDetailsOpen(true);
     window.setTimeout(() => topicDetailsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
   };
-  const loadCSV = async (file) => {
-    if (!file) return;
+  const clearAnalysis = () => {
+    setEvents([]); setAnalysisLoaded(false); setVideoValid(false); setVideoUrl('');
+    setCsvDownloadUrl(''); setVideoSeconds(0); setCsvName(''); setSource('');
+    setCsvError(''); setVideoError(''); setSelectedTopic('all'); setActive(null);
+    setSelectedSlowdownTrack(null); setTopicDetailsOpen(false); setReviewSecond(0);
     setScreen('upload');
-    setEvents([]); setCsvError('Validating CSV…'); setCsvName(file.name); setActive(null); setSelectedTopic('all'); setSelectedSlowdownTrack(null);
-    const result = parseCSV(await file.text());
-    if (result.error) { setCsvError(result.error); setNotice(result.error); return; }
-    setEvents(result.events); setCsvError(''); setNotice(videoValid ? `Validated ${result.events.length} event rows in ${file.name}.` : `Validated ${result.events.length} event rows in ${file.name}. Now validate a video.`);
   };
-  const loadVideo = (file) => {
-    if (!file) return;
-    setScreen('upload');
-    setVideoValid(false); setVideoError('Checking video format and duration…'); setVideoSeconds(0); setActive(null); setSelectedTopic('all'); setSelectedSlowdownTrack(null);
-    if (videoUrl?.startsWith('blob:')) URL.revokeObjectURL(videoUrl);
-    setSource(file.name);
-    if (!/\.(mp4|webm|mov)$/i.test(file.name) || file.size === 0) {
-      setVideoUrl(''); setVideoError('Choose a non-empty MP4, WebM, or MOV video. AVI is not supported by browser playback.'); return;
-    }
-    if (!/annotated/i.test(file.name)) {
-      setVideoUrl(''); setVideoError('This looks like the original video. Choose the annotated output from data/processed so the overlays are visible.'); return;
-    }
-    setVideoUrl(URL.createObjectURL(file)); setNotice(`Checking ${file.name}…`);
+  const loadAnalysis = (analysis) => {
+    clearAnalysis();
+    setEvents(analysis.events); setVideoUrl(analysis.video_url);
+    setCsvDownloadUrl(analysis.csv_url); setSource(analysis.video_name);
+    setCsvName(analysis.csv_name); setVideoSeconds(analysis.duration);
+    setAnalysisLoaded(true); setVideoValid(true); setScreen('overview');
+    setNotice(analysis.warnings.length ? analysis.warnings.join(' ') : `${analysis.video_name} · ${analysis.events.length} review events. Metrics describe exported evidence; throughput and capacity are not measured.`);
   };
   const markVideoReady = () => {
     const player = videoRef.current;
@@ -285,6 +223,7 @@ function App() {
     setNotice(`Validated ${source} (${fmt(player.duration)}).`);
   };
   const downloadReview = () => {
+    if (csvDownloadUrl) { window.location.assign(csvDownloadUrl); return; }
     const rows = [['Time', 'Track', 'Signal', 'Duration (s)', 'Confidence', 'Evidence rule', 'Interpretation'], ...events.map((e) => [e.label, e.track, e.signal, e.duration, e.confidence, e.evidence, e.interpretation])];
     const csv = rows.map((r) => r.map((v) => `"${String(v).replaceAll('"', '""')}"`).join(',')).join('\n');
     const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); link.download = 'worksight-review.csv'; link.click(); URL.revokeObjectURL(link.href);
@@ -292,32 +231,23 @@ function App() {
 
   return <div className={`app-shell ${screen === 'upload' ? 'upload-app-shell' : ''}`}>
     {screen !== 'upload' && <aside className="sidebar">
-      <div className="brand"><div className="brand-mark"><ScanLine size={19}/></div><span>worksight<span className="brand-dot">.</span></span></div>
+      <button type="button" className="brand brand-home" aria-label="Go to WorkSight home" onClick={() => setScreen('upload')}><div className="brand-mark"><ScanLine size={19}/></div><span>worksight<span className="brand-dot">.</span></span></button>
       <div className="site-switch"><span className="site-icon"><Factory size={16}/></span><span><b>North dock</b><small>Operations site</small></span><ChevronDown size={15}/></div>
       <div className="nav-label">WORKSPACE</div>
       <button className={`nav-item ${screen === 'overview' ? 'selected' : ''}`} onClick={() => setScreen('overview')}><Gauge size={17}/> Operations overview</button>
       <button className="nav-item" onClick={() => { setScreen('overview'); window.setTimeout(() => document.querySelector('#review')?.scrollIntoView({ behavior: 'smooth' }), 50); }}><Video size={17}/> Video review</button>
-      <button className="nav-item" onClick={() => { setScreen('upload'); window.setTimeout(() => csvInput.current?.click(), 50); }}><Layers3 size={17}/> Change files <FileUp size={14} className="nav-trailing"/></button>
-      <div className="side-bottom"><div className="privacy"><ShieldCheck size={16}/><span><b>Private by design</b><small>Files stay in this browser session</small></span></div><button className="nav-item"><Settings2 size={17}/> Settings</button><div className="profile"><div className="avatar">KM</div><span><b>Operations lead</b><small>Local workspace</small></span><ChevronDown size={14}/></div></div>
+      <button className="nav-item" onClick={() => { setScreen('upload');  }}><Layers3 size={17}/> Change files <FileUp size={14} className="nav-trailing"/></button>
+      <div className="side-bottom"><div className="privacy"><ShieldCheck size={16}/><span><b>Private by design</b><small>Files stay on this machine</small></span></div><button className="nav-item"><Settings2 size={17}/> Settings</button><div className="profile"><div className="avatar">KM</div><span><b>Operations lead</b><small>Local workspace</small></span><ChevronDown size={14}/></div></div>
     </aside>}
 
     <main className={`main ${screen === 'upload' ? 'upload-main' : ''}`}>
       {screen !== 'upload' && <header className="topbar"><div className="crumb">Operations <span>/</span> Overview <span className="live-tag"><i/> OPERATIONS</span></div><div className="top-actions"><button className="icon-button" aria-label="Search"><Search size={17}/></button><button className="icon-button notification" aria-label="Notifications"><Bell size={17}/><i/></button><span className="top-date">Shift review · Today</span></div></header>}
       <div className={`content ${screen === 'upload' ? 'upload-content' : ''}`}>
-        <input ref={csvInput} type="file" accept=".csv,text/csv" hidden onChange={(e) => { loadCSV(e.target.files?.[0]); e.target.value = ''; }}/>
-        <input ref={videoInput} type="file" accept=".mp4,.webm,.mov,video/mp4,video/webm,video/quicktime" hidden onChange={(e) => { loadVideo(e.target.files?.[0]); e.target.value = ''; }}/>
-        {screen === 'upload' && <section className="upload-welcome"><div className="brand"><div className="brand-mark"><ScanLine size={19}/></div><span>worksight<span className="brand-dot">.</span></span></div><div className="eyebrow">VIDEO OPERATIONS WORKSPACE</div><h1>{dataReady ? 'Your files are ready' : 'Upload your analysis files'}</h1><p>{dataReady ? `${csvName} and ${source} are validated for this browser session.` : 'Choose your WorkSight event CSV and browser-ready annotated video. Once both are validated, the operations overview opens automatically.'}</p>{dataReady && <button className="button primary upload-return" onClick={() => setScreen('overview')}>Return to operations overview</button>}</section>}
-        {screen !== 'upload' && <section className="page-heading"><div><div className="eyebrow">SHIFT INTELLIGENCE <span className="green-pip"/></div><h1>Operations overview</h1><p>Review model-detected events against the annotated video.</p></div><div className="heading-buttons"><button className="button secondary" onClick={() => { setScreen('upload'); window.setTimeout(() => csvInput.current?.click(), 0); }}><FileUp size={15}/> Change files</button><button className="button primary" onClick={() => { setScreen('upload'); window.setTimeout(() => videoInput.current?.click(), 0); }}><Video size={15}/> Change video</button></div></section>}
+        {screen === 'upload' && <section className="upload-welcome"><button type="button" className="brand brand-home" aria-label="Go to WorkSight home" onClick={() => setScreen('upload')}><div className="brand-mark"><ScanLine size={19}/></div><span>worksight<span className="brand-dot">.</span></span></button><div className="eyebrow">VIDEO OPERATIONS WORKSPACE</div><h1>{dataReady ? 'Your files are ready' : 'Upload your analysis files'}</h1><p>{dataReady ? `${csvName} and ${source} are validated for this browser session.` : 'Choose your WorkSight event CSV and browser-ready annotated video. Once both are validated, the operations overview opens automatically.'}</p>{dataReady && <button className="button primary upload-return" onClick={() => setScreen('overview')}>Return to operations overview</button>}</section>}
+        {screen !== 'upload' && <section className="page-heading"><div><div className="eyebrow">SHIFT INTELLIGENCE <span className="green-pip"/></div><h1>Operations overview</h1><p>Review model-detected events against the annotated video.</p></div><div className="heading-buttons"><button className="button secondary" onClick={() => { setScreen('upload');  }}><FileUp size={15}/> Change files</button><button className="button primary" onClick={() => { setScreen('upload');  }}><Video size={15}/> Load / process video</button></div></section>}
         {screen !== 'upload' && <div className="data-notice"><span className="notice-icon"><Activity size={15}/></span><span>{notice}</span><button onClick={() => setNotice('Signals are estimates from video. Confirm important events before acting.') }><CircleHelp size={15}/></button></div>}
-        {screen === 'upload' || !dataReady ? <section className="upload-gate">
-          <div className="gate-heading"><span className="eyebrow">{dataReady ? 'FILES VALIDATED' : 'GET STARTED'}</span><h2>{dataReady ? 'Your files are ready' : 'Add both analysis files'}</h2><p>{dataReady ? 'Replace either file below, or return to the operations overview.' : 'The report opens after WorkSight validates the event CSV and confirms the annotated video plays and covers all event times.'}</p></div>
-          <div className="file-checks">
-            <article className={`file-check ${csvValid ? 'file-valid' : csvError && csvError !== 'Validating CSV…' ? 'file-invalid' : ''}`}><div className="file-check-top"><span className="file-check-icon"><Layers3 size={19}/></span><span className="file-number">01</span></div><h3>Events CSV</h3><p>WorkSight export with Time, Track, Signal, Duration (s), and Confidence.</p><button className="button secondary" onClick={() => csvInput.current?.click()}><FileUp size={14}/>{csvValid ? 'Choose another CSV' : 'Choose CSV file'}</button><div className="file-status">{csvValid ? <ShieldCheck size={14}/> : <CircleHelp size={14}/>}<span>{csvValid ? `${csvName} · ${events.length} valid events` : csvError || 'Required · CSV format not checked yet'}</span></div></article>
-            <article className={`file-check ${videoValid ? 'file-valid' : videoError && videoError !== 'Checking video format and duration…' ? 'file-invalid' : ''}`}><div className="file-check-top"><span className="file-check-icon"><Video size={19}/></span><span className="file-number">02</span></div><h3>Video evidence</h3><p>Load the browser-ready annotated MP4 to see zones and detections at each event.</p><button className="button secondary" onClick={() => videoInput.current?.click()}><Video size={14}/>{videoValid ? 'Choose another video' : 'Choose video file'}</button><div className="file-status">{videoValid ? <ShieldCheck size={14}/> : <CircleHelp size={14}/>}<span>{videoValid ? `${source} · ${fmt(videoSeconds)} · playable` : videoError || 'Required · MP4, WebM, or MOV'}</span></div>{videoUrl && <video className="validation-player" ref={videoRef} src={videoUrl} controls playsInline preload="metadata" onLoadedMetadata={(e) => setVideoSeconds(e.currentTarget.duration || 0)} onCanPlay={markVideoReady} onError={() => { setVideoValid(false); setVideoError(`Browser cannot decode ${source}. Choose the H.264 *_annotated_browser.mp4 file.`); }}/>}</article>
-          </div>
-          {csvValid && videoValid && !timestampsMatch && <div className="validation-warning"><CircleHelp size={16}/> CSV/video mismatch: last event is at {fmt(latestEventTime)}, but video is {fmt(videoSeconds)}. Load the matching video.</div>}
-          <div className="gate-footer"><ShieldCheck size={15}/><span>Files stay in this browser session. No report data appears until both files pass validation.</span></div>
-        </section> : <>
+        {videoError && <p className="workspace-error" role="alert">{videoError}</p>}
+{screen === 'upload' || !dataReady ? <Workspace onLoad={loadAnalysis} onClear={clearAnalysis}/> : <>
         <section className="panel worker-activity-panel">
           <div className="panel-heading"><div><div className="eyebrow">01 · ACTIVITY BY MINUTE</div><h2>Detected handling and belt activity</h2><p>Each bar represents one 60-second video window. Select a bar to review that minute.</p></div></div>
           <div className="worker-activity-chart" aria-label="Detected activity by 60-second video window">
@@ -347,29 +277,15 @@ function App() {
             </button>
           </div>
         </section>
-        <section className="panel slowdown-panel" aria-label="Slowdown events by anonymous track">
-          <div className="panel-heading"><div><div className="eyebrow">SLOWDOWN EVENTS</div><h2>Anonymous tracks ranked by candidate slowdown time</h2><p>Select a track to see its timestamps and open supporting video evidence.</p></div><span className="count-pill">{slowdownTracks.length} tracks</span></div>
-          <div className="slowdown-grid">
-            <div className="slowdown-track-list">
-              {slowdownTracks.map((item, index) => <button type="button" key={item.track} className={activeSlowdownTrack?.track === item.track ? 'slowdown-track-selected' : ''} onClick={() => setSelectedSlowdownTrack(item.track)}><span>#{index + 1} · Person ID {item.track}</span><b>{fmt(item.seconds)}</b><small>{item.events.length} slowdown events</small></button>)}
-              {slowdownTracks.length === 0 && <p>No slowdown events are available.</p>}
-            </div>
-            <div className="slowdown-detail">
-              {activeSlowdownTrack ? <><div><div className="eyebrow">SELECTED PERSON</div><h3>Person ID {activeSlowdownTrack.track}</h3><p>{fmt(activeSlowdownTrack.seconds)} total candidate slowdown time across {activeSlowdownTrack.events.length} events.</p></div><div className="slowdown-timestamp-list">{activeSlowdownTrack.events.map((event) => <button type="button" key={event.id} onClick={() => seek(event)}><b>{event.label}</b><span>{event.duration.toFixed(1)} sec · candidate slowdown</span><Play size={13}/></button>)}</div></> : <p>Select an anonymous track to see timestamps.</p>}
-            </div>
-          </div>
-          <div className="review-event-caveat">Person IDs are temporary tracker IDs. Candidate slowdown is a review cue, not confirmed idle time.</div>
-        </section>
-    
         <section className="video-review-grid" id="review">
         <section className="panel video-panel primary-video-panel">
           <div className="panel-heading">
             <div><div className="eyebrow">VIDEO EVIDENCE</div><h2>Annotated video</h2><p>Select an event below to jump to its timestamp.</p></div>
-            <button className="small-button" onClick={() => videoInput.current?.click()}><Video size={14}/> Replace video</button>
+            <div className="event-actions"><a className="small-button" href={`${videoUrl}?download=1`}><Download size={14}/> Download video</a><button className="small-button" onClick={() => setScreen('upload')}><Video size={14}/> Replace analysis</button></div>
           </div>
           <div className="video-frame">
             <video ref={videoRef} src={videoUrl} controls playsInline preload="metadata" onCanPlay={markVideoReady}
-              onError={() => { setVideoValid(false); setVideoError(`Browser cannot decode ${source}. Choose the H.264 *_annotated_browser.mp4 file.`); }}
+              onError={() => { setVideoValid(false); setVideoError(`Browser cannot decode ${source}. Choose a playable H.264 MP4 or convert the video before loading it.`); }}
               onTimeUpdate={(e) => {
                 const second = Math.floor(e.currentTarget.currentTime);
                 setReviewSecond((current) => current === second ? current : second);
@@ -394,8 +310,34 @@ function App() {
         </aside>
         </section>
 
-    
 
+
+        <section className="panel slowdown-panel" aria-label="Slowdown events by anonymous track">
+          <div className="panel-heading"><div><div className="eyebrow">SLOWDOWN EVENTS</div><h2>Anonymous tracks ranked by candidate slowdown time</h2><p>Select a track to see its timestamps and open supporting video evidence.</p></div><span className="count-pill">{slowdownTracks.length} tracks</span></div>
+          <div className="slowdown-grid">
+            <div className="slowdown-track-list">
+              {slowdownTracks.map((item, index) => <button type="button" key={item.track} className={activeSlowdownTrack?.track === item.track ? 'slowdown-track-selected' : ''} onClick={() => setSelectedSlowdownTrack(item.track)}><span>#{index + 1} · Person ID {item.track}</span><b>{fmt(item.seconds)}</b><small>{item.events.length} slowdown events</small></button>)}
+              {slowdownTracks.length === 0 && <p>No slowdown events are available.</p>}
+            </div>
+            <div className="slowdown-detail">
+              {activeSlowdownTrack ? <><div><div className="eyebrow">SELECTED PERSON</div><h3>Person ID {activeSlowdownTrack.track}</h3><p>{fmt(activeSlowdownTrack.seconds)} total candidate slowdown time across {activeSlowdownTrack.events.length} events.</p></div><div className="slowdown-timestamp-list">{activeSlowdownTrack.events.map((event) => <button type="button" key={event.id} onClick={() => seek(event)}><b>{event.label}</b><span>{event.duration.toFixed(1)} sec · candidate slowdown</span><Play size={13}/></button>)}</div></> : <p>Select an anonymous track to see timestamps.</p>}
+            </div>
+          </div>
+          <div className="review-event-caveat">Person IDs are temporary tracker IDs. Candidate slowdown is a review cue, not confirmed idle time.</div>
+        </section>
+
+        {topicDetailsOpen && selectedTopic !== 'all' && <section className="panel topic-timeline-panel" ref={topicDetailsRef} tabIndex="-1">
+          <div className="panel-heading"><div><div className="eyebrow">TOPIC EVENT TIMELINE</div><h2>{selectedTopicEvents.length} {selectedTopic} review events</h2><p>Each bar shows an event duration across the video. Select a bar to open that evidence.</p></div><button className="small-button" onClick={() => setTopicDetailsOpen(false)}>Collapse</button></div>
+          <div className="topic-timeline-scale"><span>0:00</span><span>{fmt(timelineSeconds / 2)}</span><span>{fmt(timelineSeconds)}</span></div>
+          <div className="topic-timeline">
+            {selectedTopicSignals.map((signal) => <div className="topic-timeline-row" key={signal}><span>{presentEvent({ signal }).label}</span><div className="topic-timeline-track">{selectedTopicEvents.filter((event) => event.signal === signal).map((event) => <button type="button" key={event.id} className={`timeline-event timeline-${presentEvent(event).type}`} style={{ left: `${100 * event.seconds / timelineSeconds}%`, width: `${Math.max(0.5, 100 * event.duration / timelineSeconds)}%` }} title={`${event.label} · ${event.duration.toFixed(1)}s · Track ${event.track}`} onClick={() => seek(event)}/>)}</div></div>)}
+          </div>
+        </section>}
+
+        <section className="summary-review-grid">
+          <section className="panel summary-card"><div className="eyebrow">STAFFING MISMATCH</div><h2>{staffingMismatchEvents.length} review cues</h2><p>Three or more tracks in the work area with at most one wrist-in-conveyor activity cue. Review timestamps before interpreting staffing needs.</p><button onClick={() => showTopicDetails('resources')}>Open staffing timeline</button></section>
+          <section className="panel summary-card"><div className="eyebrow">SAFETY SUMMARY</div><h2>{safetyEvents.length} conveyor review cues</h2><p>{safetyEvents.reduce((sum, event) => sum + event.duration, 0).toFixed(1)} accumulated track-seconds of foot/body overlap. Overlapping events may describe the same moment.</p><button onClick={() => showTopicDetails('risks')}>Open safety timeline</button></section>
+        </section>
         <section className="panel event-panel compact-event-panel" aria-label="Events">
           <div className="panel-heading">
             <div><div className="eyebrow">REVIEW EVENTS</div><h2>Events and risk cues</h2><p>Labels describe what the model detected; verify the moment in the video.</p></div>
@@ -428,18 +370,18 @@ function App() {
         </section>
 
         <section className="panel priority-panel">
-          <div className="panel-heading"><div><div className="eyebrow">PRIORITISED REVIEW QUEUE</div><h2>Review the highest-impact evidence first</h2><p>Urgent safety, longest slowdown periods, then belt activity.</p></div></div>
-          <div className="priority-list">
-            {priorityEvents.map((event) => <button type="button" key={event.id} onClick={() => seek(event)}><span>{event.label}</span><b>{presentEvent(event).label}</b><small>Track {event.track} · {event.duration.toFixed(1)}s · {event.evidence || presentEvent(event).explanation}</small></button>)}
+          <div className="panel-heading"><div><div className="eyebrow">PRIORITISED REVIEW QUEUE</div><h2>Person-on-conveyor review</h2><p>Safety signals appear first. Select a bar to jump to the person and timestamp.</p></div><span className="count-pill">{personOnBeltEvents.length} cues</span></div>
+          <div className="belt-review-axis"><span>0:00</span><span>{fmt(timelineSeconds / 2)}</span><span>{fmt(timelineSeconds)}</span></div>
+          <div className="belt-review-timeline">
+            {personOnBeltTracks.map((person) => <div className="belt-review-row" key={person.track}>
+              <span className="belt-review-label"><b>Person ID {person.track}</b><small>{person.events.length} conveyor cues</small></span>
+              <span className="belt-review-track">{person.events.map((event) => <button type="button" key={event.id} className={`belt-review-segment ${event.signal === 'possible body on conveyor' ? 'belt-review-body' : ''} ${event.manual ? 'belt-review-manual' : ''}`} style={{ left: `${100 * event.seconds / timelineSeconds}%`, width: `${Math.max(0.8, 100 * event.duration / timelineSeconds)}%` }} onClick={() => seek(event)} title={`${event.manual ? 'URGENT SAFETY REVIEW · Manual marker' : 'Person ID ' + event.track + ' · ' + event.signal} · ${event.label}–${fmt(event.seconds + event.duration)} · ${event.evidence || 'No additional evidence'}`}/>)}</span>
+              <span className="belt-review-kind">Orange: zone · <strong>◆</strong> body</span>
+            </div>)}
+            {personOnBeltTracks.length === 0 && <p className="priority-empty">No person-on-conveyor signals were recorded.</p>}
           </div>
         </section>
-        {topicDetailsOpen && selectedTopic !== 'all' && <section className="panel topic-timeline-panel" ref={topicDetailsRef} tabIndex="-1">
-          <div className="panel-heading"><div><div className="eyebrow">TOPIC EVENT TIMELINE</div><h2>{selectedTopicEvents.length} {selectedTopic} review events</h2><p>Each bar shows an event duration across the video. Select a bar to open that evidence.</p></div><button className="small-button" onClick={() => setTopicDetailsOpen(false)}>Collapse</button></div>
-          <div className="topic-timeline-scale"><span>0:00</span><span>{fmt(timelineSeconds / 2)}</span><span>{fmt(timelineSeconds)}</span></div>
-          <div className="topic-timeline">
-            {selectedTopicSignals.map((signal) => <div className="topic-timeline-row" key={signal}><span>{presentEvent({ signal }).label}</span><div className="topic-timeline-track">{selectedTopicEvents.filter((event) => event.signal === signal).map((event) => <button type="button" key={event.id} className={`timeline-event timeline-${presentEvent(event).type}`} style={{ left: `${100 * event.seconds / timelineSeconds}%`, width: `${Math.max(0.5, 100 * event.duration / timelineSeconds)}%` }} title={`${event.label} · ${event.duration.toFixed(1)}s · Track ${event.track}`} onClick={() => seek(event)}/>)}</div></div>)}
-          </div>
-        </section>}
+
         </>}
       </div>
     </main>

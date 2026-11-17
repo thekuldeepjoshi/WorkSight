@@ -10,7 +10,7 @@ Answer operational questions from WorkSight's processed local data. Query the da
 ## Start with the data
 
 1. Find `data/worksight.sqlite3` from the project root. If it is missing, report that and ask for the database or an exported events CSV. Do not invent figures.
-2. List available videos and select the matching `status='complete'` video. Use the video ID on every query so records from different videos are never combined.
+2. List available videos and select the matching `status='complete'` analysis. Every processing run has a new analysis/video ID; `runs.source_video_id` links it to the original upload. Use `--video-id` or its alias `--run-id` on every query. Never combine different runs.
 3. Use the bundled read-only helper for common questions:
 
    ```bash
@@ -33,7 +33,8 @@ Answer operational questions from WorkSight's processed local data. Query the da
 - Treat `possible_person_in_conveyor_zone` as a safety-review cue based on an ankle landmark or fallback footpoint entering the conveyor polygon, not as a confirmed hazard.
 - Treat `in_work_area=1` as **presence in the configured zone**, not engagement or utilization. A frame-level staffing imbalance means several tracks were inside the zone while fewer had a wrist or detected fingertip inside the belt zone at the same frame.
 - “Most underutilised” is not directly measured. Rank time windows by the absence or low share of candidate wrist-zone activity, and call them **low detected belt-activity periods**. State the window size and the comparison used.
-- Throughput, belt occupancy/capacity, item counts, completed work, waiting, and task quality are not recorded. Do not claim these values or that more/less staff is needed. Describe a possible opportunity as a hypothesis to review.
+- Package observations and distinct nonnegative package track IDs are recorded in `package_detections` when enabled. Use the summary helper's `unique_package_tracks`; repeated frame observations are not unique packages. Track fragmentation can overcount physical parcels. Throughput, calibrated capacity, completed unloads and task quality are not measured.
+- The database may be intentionally empty following a backup/reset. Ask for a newly processed analysis. Imported video/CSV pairs are stored separately for dashboard review and do not create raw frame detections.
 - Track IDs are temporary and anonymous within one video; do not refer to a track ID as a real person or compare IDs across videos.
 - `events.confidence` is the maximum person-box confidence recorded during an event, not the probability that the operational interpretation is true.
 - Zone geometry, duration thresholds, occlusion, camera view, and tracker ID switches affect results. Mention these limits when they could change the recommendation.

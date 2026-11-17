@@ -1,0 +1,26 @@
+services:
+  worksight:
+    build: .
+    image: worksight:latest
+    ports:
+      - "5001:5001"
+    volumes:
+      - worksight-data:/app/data
+    environment:
+      WORKSIGHT_HOST: 0.0.0.0
+      WORKSIGHT_PORT: 5001
+    restart: unless-stopped
+
+  worksight-mcp:
+    build: .
+    image: worksight:latest
+    command: ["python", "/app/mcp_server/worksight_server.py"]
+    stdin_open: true
+    volumes:
+      - worksight-data:/app/data
+    environment:
+      WORKSIGHT_DB: /app/data/worksight.sqlite3
+    profiles: [mcp]
+
+volumes:
+  worksight-data:

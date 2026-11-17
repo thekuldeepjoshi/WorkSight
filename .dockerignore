@@ -1,0 +1,14 @@
+.git
+.gitignore
+.venv
+.venv-intel
+node_modules
+dashboard/node_modules
+dashboard/dist
+__pycache__
+*.pyc
+.DS_Store
+data
+tests
+docs
+.streamlit

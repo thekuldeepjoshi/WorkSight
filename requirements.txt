@@ -1,13 +1,10 @@
 ultralytics>=8.4.120
-opencv-python>=4.10
-numpy>=1.24
-# Streamlit 1.60 is the newest release compatible with MediaPipe's Protobuf 4 requirement.
-streamlit==1.60.0
-# Later Starlette/Uvicorn releases cause invalid ASGI response ordering with Streamlit 1.60.
-starlette==0.46.2
-uvicorn==0.34.0
-streamlit-drawable-canvas>=0.13,<0.14
-pandas>=2.0
+opencv-contrib-python==4.11.0.86
+# Ultralytics also declares opencv-python; keep its transitive wheel on the same build.
+opencv-python==4.11.0.86
+numpy>=1.24,<2
+Flask>=3.1,<4
+waitress>=3,<4
 imageio-ffmpeg>=0.8,<0.9
 sentencepiece==0.2.0; python_version < "3.13"
 # MediaPipe Hands currently requires the Protobuf 4 series.
