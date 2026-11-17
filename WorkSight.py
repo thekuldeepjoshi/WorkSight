@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
+import hashlib
 import math
+import csv
+import re
 import sqlite3
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -14,21 +15,22 @@ from typing import Callable
 import cv2
 import numpy as np
 
-
-ROOT = Path(__file__).resolve().parent
-DATA_DIR = ROOT / "data"
-UPLOADS_DIR = DATA_DIR / "uploads"
-PROCESSED_DIR = DATA_DIR / "processed"
-DB_PATH = DATA_DIR / "worksight.sqlite3"
-ANALYSIS_VERSION = 3
-HAND_CONNECTIONS = (
-    (0, 1), (1, 2), (2, 3), (3, 4),
-    (0, 5), (5, 6), (6, 7), (7, 8),
-    (5, 9), (9, 10), (10, 11), (11, 12),
-    (9, 13), (13, 14), (14, 15), (15, 16),
-    (13, 17), (17, 18), (18, 19), (19, 20), (0, 17),
+from worksight.config import (
+    ANALYSIS_VERSION,
+    DATA_DIR,
+    DB_PATH,
+    HAND_CONNECTIONS,
+    HAND_FINGERTIPS,
+    PROCESSED_DIR,
+    UPLOADS_DIR,
 )
-HAND_FINGERTIPS = (4, 8, 12, 16, 20)
+from worksight.media import convert_browser_video, hash_file, inspect_video
+from worksight.rules import (
+    inside_zone as _inside_zone,
+    inset_zone as _inset_zone,
+    package_activity_signals as _package_activity_signals,
+    staffing_pressure as _staffing_pressure,
+)
 
 
 def connect_db() -> sqlite3.Connection:
@@ -55,12 +57,14 @@ def initialize_db() -> None:
                 duration_seconds REAL,
                 zone_signature TEXT,
                 output_path TEXT,
+                events_path TEXT,
                 error TEXT,
                 created_at TEXT NOT NULL,
                 processed_at TEXT,
                 analysis_version INTEGER NOT NULL DEFAULT 1,
                 hand_landmarks_enabled INTEGER NOT NULL DEFAULT 0,
-                package_detection_enabled INTEGER NOT NULL DEFAULT 0
+                package_detection_enabled INTEGER NOT NULL DEFAULT 0,
+                analysis_fps REAL NOT NULL DEFAULT 30
             );
 
             CREATE TABLE IF NOT EXISTS zones (
@@ -146,14 +150,10 @@ def initialize_db() -> None:
             )
         if "package_detection_enabled" not in video_columns:
             db.execute("ALTER TABLE videos ADD COLUMN package_detection_enabled INTEGER NOT NULL DEFAULT 0")
-
-
-def hash_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as video_file:
-        for chunk in iter(lambda: video_file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+        if "analysis_fps" not in video_columns:
+            db.execute("ALTER TABLE videos ADD COLUMN analysis_fps REAL NOT NULL DEFAULT 30")
+        if "events_path" not in video_columns:
+            db.execute("ALTER TABLE videos ADD COLUMN events_path TEXT")
 
 
 def ensure_video(video_id: str, source_name: str, source_path: Path) -> None:
@@ -168,38 +168,6 @@ def ensure_video(video_id: str, source_name: str, source_path: Path) -> None:
                    source_path = excluded.source_path""",
             (video_id, source_name, str(source_path), now),
         )
-
-
-def inspect_video(path: Path) -> dict:
-    capture = cv2.VideoCapture(str(path))
-    if not capture.isOpened():
-        raise ValueError(f"Could not open video: {path}")
-    try:
-        fps = float(capture.get(cv2.CAP_PROP_FPS))
-        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        if width <= 0 or height <= 0:
-            raise ValueError("The video does not contain readable frames.")
-        capture.set(cv2.CAP_PROP_POS_MSEC, 1000)
-        ok, frame = capture.read()
-        if not ok:
-            capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            ok, frame = capture.read()
-        if not ok:
-            raise ValueError("Could not read a frame from this video.")
-        if not math.isfinite(fps) or fps <= 0:
-            fps = 30.0
-        return {
-            "width": width,
-            "height": height,
-            "fps": fps,
-            "frame_count": frame_count,
-            "duration_seconds": frame_count / fps if frame_count else 0.0,
-            "preview": frame,
-        }
-    finally:
-        capture.release()
 
 
 def save_zone(video_id: str, name: str, points: list[list[float]]) -> None:
@@ -237,41 +205,6 @@ def zone_signature(zones: dict[str, list[list[float]]]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _convert_browser_video(source: Path, target: Path) -> None:
-    """Encode the OpenCV output as H.264 so browser video players can decode it."""
-    import imageio_ffmpeg
-
-    temporary_target = target.with_name(f"{target.stem}.tmp.mp4")
-    try:
-        subprocess.run(
-            [
-                imageio_ffmpeg.get_ffmpeg_exe(),
-                "-loglevel",
-                "error",
-                "-y",
-                "-i",
-                str(source),
-                "-c:v",
-                "libx264",
-                "-preset",
-                "fast",
-                "-crf",
-                "22",
-                "-pix_fmt",
-                "yuv420p",
-                "-movflags",
-                "+faststart",
-                "-an",
-                str(temporary_target),
-            ],
-            check=True,
-        )
-        temporary_target.replace(target)
-    except Exception:
-        temporary_target.unlink(missing_ok=True)
-        raise
-
-
 def list_videos() -> list[dict]:
     initialize_db()
     with connect_db() as db:
@@ -300,6 +233,98 @@ def get_events(video_id: str) -> list[dict]:
     for event in events:
         event["details"] = json.loads(event.pop("details_json"))
     return events
+
+
+def _event_time_label(milliseconds: int) -> str:
+    seconds = max(0, milliseconds // 1000)
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+def _create_run_paths(source_name: str, started_at: datetime) -> tuple[Path, Path, Path]:
+    """Create the next numbered output folder and return its video/CSV paths."""
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    run_numbers = []
+    for path in PROCESSED_DIR.iterdir():
+        match = re.match(r"^(\d+)_", path.name)
+        if path.is_dir() and match:
+            run_numbers.append(int(match.group(1)))
+    run_number = max(run_numbers, default=0) + 1
+    timestamp = started_at.strftime("%Y%m%dT%H%M%SZ")
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", Path(source_name).stem)
+    prefix = f"{run_number:04d}_{timestamp}_{safe_name}"
+    run_dir = PROCESSED_DIR / prefix
+    run_dir.mkdir(parents=True, exist_ok=False)
+    return run_dir, run_dir / f"{prefix}_annotated.mp4", run_dir / f"{prefix}_events.csv"
+
+
+def _write_events_csv(db: sqlite3.Connection, video_id: str, target: Path) -> None:
+    rows = db.execute(
+        """SELECT track_id, event_type, start_ms, duration_ms, confidence, details_json
+           FROM events WHERE video_id = ? ORDER BY start_ms""",
+        (video_id,),
+    ).fetchall()
+    with target.open("w", newline="", encoding="utf-8") as output_file:
+        writer = csv.DictWriter(
+            output_file,
+            fieldnames=["Time", "Track", "Signal", "Duration (s)", "Confidence", "Evidence rule", "Interpretation"],
+        )
+        writer.writeheader()
+        for row in rows:
+            details = json.loads(row["details_json"])
+            writer.writerow(
+                {
+                    "Time": _event_time_label(row["start_ms"]),
+                    "Track": "Team" if row["track_id"] < 0 else row["track_id"],
+                    "Signal": row["event_type"].replace("_", " "),
+                    "Duration (s)": round(row["duration_ms"] / 1000, 1),
+                    "Confidence": round(row["confidence"], 2),
+                    "Evidence rule": details.get("rule", ""),
+                    "Interpretation": details.get("interpretation", ""),
+                }
+            )
+
+
+def _record_staffing_mismatch_events(
+    db: sqlite3.Connection, video_id: str, frame_interval_ms: int
+) -> None:
+    """Record sustained frames with several present tracks but little belt activity."""
+    rows = db.execute(
+        """SELECT frame_index, timestamp_ms,
+                  COUNT(DISTINCT CASE WHEN in_work_area = 1 THEN track_id END) AS present_count,
+                  COUNT(DISTINCT CASE WHEN wrist_on_belt = 1 THEN track_id END) AS active_count
+           FROM detections WHERE video_id = ? AND track_id IS NOT NULL
+           GROUP BY frame_index, timestamp_ms ORDER BY timestamp_ms""",
+        (video_id,),
+    ).fetchall()
+    state = None
+
+    def insert_state(item):
+        duration_ms = item["last_ms"] - item["start_ms"] + frame_interval_ms
+        if duration_ms < 1000:
+            return
+        details = {
+            "rule": "At least three tracked people were in the work area while no more than one had a wrist-in-conveyor activity cue in the same frame.",
+            "interpretation": "Possible staffing mismatch review cue; confirm the video before inferring idle time or changing staffing.",
+        }
+        db.execute(
+            """INSERT INTO events (video_id, track_id, event_type, start_ms, end_ms,
+               duration_ms, evidence_frame, confidence, details_json)
+               VALUES (?, -1, 'candidate_staffing_mismatch', ?, ?, ?, ?, 0, ?)""",
+            (video_id, item["start_ms"], item["last_ms"], duration_ms, item["frame_index"], json.dumps(details)),
+        )
+
+    for row in rows:
+        qualifying = row["present_count"] >= 3 and row["active_count"] <= 1
+        if qualifying:
+            if state is None:
+                state = {"start_ms": row["timestamp_ms"], "last_ms": row["timestamp_ms"], "frame_index": row["frame_index"]}
+            else:
+                state["last_ms"] = row["timestamp_ms"]
+        elif state is not None:
+            insert_state(state)
+            state = None
+    if state is not None:
+        insert_state(state)
 
 
 def get_summary(video_id: str) -> dict:
@@ -355,38 +380,6 @@ def get_summary(video_id: str) -> dict:
     }
 
 
-def _inside_zone(point: tuple[float, float], polygon: np.ndarray) -> bool:
-    return cv2.pointPolygonTest(polygon, point, False) >= 0
-
-
-def _package_activity_signals(
-    package_detection_enabled: bool,
-    conveyor_package_count: int,
-    carrying: bool,
-    hand_signal: bool,
-    toward_package: bool,
-) -> dict[str, bool]:
-    """Classify candidate worker/package signals for one frame and track."""
-    belt_has_packages = conveyor_package_count > 0
-    working = bool(carrying or (belt_has_packages and (toward_package or hand_signal)))
-    enabled = package_detection_enabled
-    return {
-        "candidate_available_no_belt_demand": bool(enabled and not belt_has_packages and not carrying),
-        "candidate_working_with_package": bool(enabled and working),
-        "candidate_belt_bottleneck": bool(
-            enabled and belt_has_packages and not carrying and not toward_package and not hand_signal
-        ),
-        "candidate_waiting_full_belt": bool(
-            enabled and conveyor_package_count >= 4 and not hand_signal and not carrying
-        ),
-    }
-
-
-def _staffing_pressure(package_count: int, active_worker_count: int) -> bool:
-    """Return whether a frame meets the prototype staffing-pressure rule."""
-    return package_count >= 3 and active_worker_count >= 2
-
-
 def _insert_event(
     event_batch: list[tuple],
     video_id: str,
@@ -427,6 +420,8 @@ def _insert_event(
         details = {"rule": "At least four package detections were on the conveyor while this worker had no hand-zone or package-near-wrist signal.", "interpretation": "Possible waiting during high belt load; item count is a proxy, not calibrated belt occupancy."}
     elif event_type == "candidate_staffing_pressure":
         details = {"rule": "At least three package detections were on the conveyor while two or more tracks showed candidate handling activity.", "interpretation": "Possible staffing pressure; review sustained backlog before adding workers."}
+    elif event_type == "candidate_low_activity":
+        details = {"rule": "A tracked person was outside the work area, was carrying a package in the work area, or stayed there with little movement and no handling cue.", "interpretation": "Possible slowdown review cue; verify the video before interpreting it as idle time or a delay."}
     elif event_type == "possible_throwing_risk":
         details = {"rule": "A tracked package moved rapidly near an estimated worker wrist.", "interpretation": "Possible throwing event; motion and hand association are heuristic and require video review."}
     else:
@@ -463,6 +458,7 @@ def process_video(
     minimum_interaction_seconds: float = 0.7,
     minimum_dwell_seconds: float = 3.0,
     minimum_conveyor_presence_seconds: float = 0.5,
+    analysis_fps: float = 10.0,
     enable_hand_landmarks: bool = False,
     enable_package_detection: bool = True,
     progress: Callable[[int, int], None] | None = None,
@@ -485,37 +481,46 @@ def process_video(
     if width <= 0 or height <= 0:
         capture.release()
         raise ValueError("The video does not contain readable frames.")
+    if analysis_fps <= 0:
+        capture.release()
+        raise ValueError("Analysis FPS must be greater than zero.")
+
+    analysis_stride = max(1, round(fps / analysis_fps))
+    effective_analysis_fps = fps / analysis_stride
 
     belt_polygon = np.asarray(
         [[x * width, y * height] for x, y in zones["conveyor"]], dtype=np.float32
     ).reshape((-1, 1, 2))
+    inner_belt_polygon = _inset_zone(belt_polygon)
     work_polygon = np.asarray(
         [[x * width, y * height] for x, y in zones["work_area"]], dtype=np.float32
     ).reshape((-1, 1, 2))
-    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    intermediate_path = PROCESSED_DIR / f"{video_id[:16]}_annotated_cv.mp4"
-    output_path = PROCESSED_DIR / f"{video_id[:16]}_annotated.mp4"
+    run_started_at = datetime.now(timezone.utc)
+    run_dir, output_path, events_path = _create_run_paths(
+        source_name or source_path.name, run_started_at
+    )
+    intermediate_path = run_dir / "annotated_working.mp4"
     output_width = width + width % 2
     output_height = height + height % 2
     writer = cv2.VideoWriter(
         str(intermediate_path),
         cv2.VideoWriter_fourcc(*"mp4v"),
-        fps,
+        effective_analysis_fps,
         (output_width, output_height),
     )
     if not writer.isOpened():
         capture.release()
         raise RuntimeError(f"Could not create annotated video: {output_path}")
 
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    now = run_started_at.isoformat(timespec="seconds")
     signature = zone_signature(zones)
     db = connect_db()
     db.execute(
         """INSERT INTO videos
            (id, source_name, source_path, status, width, height, fps, frame_count,
-            duration_seconds, zone_signature, output_path, error, created_at,
-            analysis_version, hand_landmarks_enabled, package_detection_enabled)
-           VALUES (?, ?, ?, 'processing', ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+            duration_seconds, zone_signature, output_path, events_path, error, created_at,
+            analysis_version, hand_landmarks_enabled, package_detection_enabled, analysis_fps)
+           VALUES (?, ?, ?, 'processing', ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
                source_path = excluded.source_path,
                status = 'processing',
@@ -526,11 +531,13 @@ def process_video(
                duration_seconds = excluded.duration_seconds,
                zone_signature = excluded.zone_signature,
                output_path = excluded.output_path,
+               events_path = excluded.events_path,
                error = NULL,
                processed_at = NULL,
                analysis_version = excluded.analysis_version,
                hand_landmarks_enabled = excluded.hand_landmarks_enabled,
-               package_detection_enabled = excluded.package_detection_enabled""",
+               package_detection_enabled = excluded.package_detection_enabled,
+               analysis_fps = excluded.analysis_fps""",
         (
             video_id,
             source_name or source_path.name,
@@ -542,10 +549,12 @@ def process_video(
             frame_count / fps if frame_count else 0.0,
             signature,
             str(output_path),
+            str(events_path),
             now,
             ANALYSIS_VERSION,
             int(enable_hand_landmarks),
             int(enable_package_detection),
+            effective_analysis_fps,
         ),
     )
     db.execute("DELETE FROM detections WHERE video_id = ?", (video_id,))
@@ -570,6 +579,7 @@ def process_video(
         "candidate_belt_bottleneck": {},
         "candidate_waiting_full_belt": {},
         "candidate_staffing_pressure": {},
+        "candidate_low_activity": {},
         "possible_throwing_risk": {},
     }
     thresholds = {
@@ -583,12 +593,15 @@ def process_video(
         "candidate_belt_bottleneck": 1500,
         "candidate_waiting_full_belt": 1500,
         "candidate_staffing_pressure": 1500,
+        "candidate_low_activity": 1000,
         "possible_throwing_risk": 300,
     }
-    frame_interval_ms = max(1, round(1000 / fps))
+    frame_interval_ms = max(1, round(1000 / effective_analysis_fps))
     frame_index = 0
+    processed_frame_index = 0
     previous_package_positions: dict[int, tuple[float, float]] = {}
     previous_worker_package_distance: dict[int, float] = {}
+    previous_worker_centers: dict[int, tuple[float, float]] = {}
     throwing_signal_until_ms: dict[int, int] = {}
 
     hands_model = None
@@ -603,13 +616,20 @@ def process_video(
                     "Detailed hand landmarks require MediaPipe. Install the project requirements "
                     "with Python 3.12, or disable hand landmarks and use wrist-only signals."
                 ) from error
-            hands_model = mp.solutions.hands.Hands(
-                static_image_mode=False,
-                max_num_hands=8,
-                model_complexity=0,
-                min_detection_confidence=0.5,
-                min_tracking_confidence=0.5,
-            )
+            try:
+                hands_model = mp.solutions.hands.Hands(
+                    static_image_mode=False,
+                    max_num_hands=8,
+                    model_complexity=1,
+                    min_detection_confidence=0.3,
+                    min_tracking_confidence=0.3,
+                )
+            except Exception as error:
+                raise RuntimeError(
+                    "MediaPipe is installed but could not start its hand model. On macOS, run "
+                    "Streamlit from a normal logged-in Terminal session so it can create its "
+                    "graphics context, or disable detailed hand landmarks and use wrist-only signals."
+                ) from error
         model = YOLO(model_name)
         package_model = None
         if enable_package_detection:
@@ -617,27 +637,27 @@ def process_video(
                 package_model = YOLO("yolov8s-world.pt")
                 package_model.set_classes(["box", "package", "carton", "parcel"])
             except Exception as error:
-                # YOLO-World downloads its CLIP text encoder on first use. A
-                # local certificate proxy can block that download; keep the
-                # worker/pose analysis usable and mark package data unavailable.
-                package_model = None
-                enable_package_detection = False
-                db.execute(
-                    "UPDATE videos SET package_detection_enabled = 0 WHERE id = ?",
-                    (video_id,),
-                )
-                db.commit()
-                print(
-                    "WorkSight: package detection disabled because its YOLO-World/CLIP "
-                    f"model could not load ({error}). Continuing with worker pose analysis."
-                )
-        package_frame_stride = max(1, round(fps / 3))
+                raise RuntimeError(
+                    "Package model could not load. Download yolov8s-world.pt and its CLIP "
+                    "files with network access, then run the analysis again. No incomplete "
+                    f"worker-only result was saved. Model error: {error}"
+                ) from error
+        # Packages are small and frequently occluded. Run the package model on
+        # every analysis frame rather than reusing a stale box for several frames.
+        package_frame_stride = 1
         cached_packages: list[dict] = []
         while True:
             ok, frame = capture.read()
             if not ok:
                 break
             timestamp_ms = round(frame_index * 1000 / fps)
+            if frame_index % analysis_stride:
+                if frame_index % 100 == 0:
+                    db.commit()
+                    if progress:
+                        progress(frame_index, frame_count)
+                frame_index += 1
+                continue
             result = model.track(
                 frame,
                 persist=True,
@@ -646,8 +666,14 @@ def process_video(
                 verbose=False,
             )[0]
             package_result = package_model.track(
-                frame, persist=True, tracker="bytetrack.yaml", conf=0.20, verbose=False
-            )[0] if package_model is not None and frame_index % package_frame_stride == 0 else None
+                frame,
+                persist=True,
+                tracker="bytetrack.yaml",
+                conf=0.12,
+                iou=0.45,
+                imgsz=960,
+                verbose=False,
+            )[0] if package_model is not None and processed_frame_index % package_frame_stride == 0 else None
             if package_result is not None and package_result.boxes is not None:
                 cached_packages = []
                 for package_box, package_score, package_id, package_class in zip(
@@ -661,11 +687,13 @@ def process_video(
                     in_belt = _inside_zone(center, belt_polygon)
                     package_track = int(package_id)
                     package_name = str(package_result.names.get(int(package_class), "package"))
-                    cached_packages.append({"track_id": package_track, "bbox": (px1, py1, px2, py2), "center": center, "in_belt": in_belt, "label": package_name, "score": float(package_score)})
+                    cached_packages.append({"track_id": package_track, "bbox": (px1, py1, px2, py2), "center": center, "in_belt": in_belt, "in_hand": False, "label": package_name, "score": float(package_score)})
                     package_batch.append((video_id, frame_index, timestamp_ms, package_track if package_track >= 0 else None, package_name, float(package_score), json.dumps([px1, py1, px2, py2]), int(in_belt)))
             elif package_result is not None:
                 cached_packages = []
             packages = cached_packages
+            for package in packages:
+                package["in_hand"] = False
             boxes = result.boxes
             keypoints = result.keypoints
             box_values = boxes.xyxy.cpu().numpy() if boxes is not None else np.empty((0, 4))
@@ -691,6 +719,7 @@ def process_video(
                 track_id = int(track_id_value)
                 pose = point_values[index].tolist() if index < len(point_values) else []
                 footpoint = ((x1 + x2) / 2, min(y2, height - 1))
+                body_center = ((x1 + x2) / 2, (y1 + y2) / 2)
                 in_work_area = _inside_zone(footpoint, work_polygon)
                 wrist_on_belt = False
                 ankle_points = []
@@ -715,13 +744,33 @@ def process_video(
                     if ankle_points
                     else _inside_zone(footpoint, belt_polygon)
                 )
-                lower_body_zone_points = []
+                inner_ankles = []
+                torso_or_knee_in_inner_zone = False
                 for body_index in (11, 12, 13, 14, 15, 16):
-                    if body_index < len(pose) and pose[body_index][2] >= 0.25:
-                        lower_body_zone_points.append(_inside_zone((float(pose[body_index][0]), float(pose[body_index][1])), belt_polygon))
-                possible_body_on_conveyor = sum(lower_body_zone_points) >= 2
+                    if body_index >= len(pose) or pose[body_index][2] < 0.5:
+                        continue
+                    point = (float(pose[body_index][0]), float(pose[body_index][1]))
+                    in_inner_belt = _inside_zone(point, inner_belt_polygon)
+                    if body_index in (15, 16):
+                        inner_ankles.append(in_inner_belt)
+                    elif in_inner_belt:
+                        torso_or_knee_in_inner_zone = True
+                possible_body_on_conveyor = (
+                    len(inner_ankles) == 2
+                    and all(inner_ankles)
+                    and torso_or_knee_in_inner_zone
+                    and _inside_zone(body_center, inner_belt_polygon)
+                )
 
                 visible_track_id = track_id if track_id >= 0 else None
+                low_motion = False
+                if visible_track_id is not None:
+                    previous_center = previous_worker_centers.get(visible_track_id)
+                    low_motion = previous_center is not None and math.hypot(
+                        body_center[0] - previous_center[0],
+                        body_center[1] - previous_center[1],
+                    ) <= max(12.0, width * 0.012)
+                    previous_worker_centers[visible_track_id] = body_center
                 frame_observations.append(
                     (
                         video_id,
@@ -756,12 +805,20 @@ def process_video(
                         "candidate_belt_bottleneck": False,
                         "candidate_waiting_full_belt": False,
                         "candidate_staffing_pressure": False,
+                        "candidate_low_activity": False,
                         "possible_throwing_risk": False,
+                        "low_motion": low_motion,
                     }
 
             frame_hands: list[dict] = []
             if hands_model is not None:
-                hand_result = hands_model.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                # Hands occupy a small portion of this wide unloading view. Upscaling
+                # before inference improves landmark recall while normalized landmarks
+                # still map correctly back to the original frame dimensions.
+                hand_frame = cv2.resize(
+                    frame, None, fx=1.75, fy=1.75, interpolation=cv2.INTER_CUBIC
+                )
+                hand_result = hands_model.process(cv2.cvtColor(hand_frame, cv2.COLOR_BGR2RGB))
                 landmarks_by_hand = hand_result.multi_hand_landmarks or []
                 handedness_by_hand = hand_result.multi_handedness or []
                 for hand_index, hand_landmarks in enumerate(landmarks_by_hand):
@@ -844,12 +901,34 @@ def process_video(
                     if wrist_index < len(pose) and pose[wrist_index][2] >= 0.2:
                         wrist_points.append((float(pose[wrist_index][0]), float(pose[wrist_index][1])))
                 carrying = False
+                hand_points = [
+                    point
+                    for hand in frame_hands
+                    if hand.get("track_id") == track_id
+                    for point in hand["points"]
+                ]
                 for package in packages:
                     px1, py1, px2, py2 = package["bbox"]
-                    near_wrist = any(math.hypot(package["center"][0] - wx, package["center"][1] - wy) < max(24.0, (y2-y1)*0.16) for wx, wy in wrist_points)
-                    if px1 < x2 and px2 > x1 and py1 < y2 and py2 > y1 and near_wrist:
+                    package_distance_to_hand = min(
+                        (
+                            math.hypot(
+                                max(px1 - hx, 0, hx - px2),
+                                max(py1 - hy, 0, hy - py2),
+                            )
+                            for hx, hy in hand_points
+                        ),
+                        default=float("inf"),
+                    )
+                    near_wrist = any(
+                        math.hypot(package["center"][0] - wx, package["center"][1] - wy)
+                        < max(32.0, (y2 - y1) * 0.24)
+                        for wx, wy in wrist_points
+                    )
+                    near_hand_landmark = package_distance_to_hand < max(18.0, (y2 - y1) * 0.12)
+                    overlaps_worker = px1 < x2 and px2 > x1 and py1 < y2 and py2 > y1
+                    if overlaps_worker and (near_wrist or near_hand_landmark):
                         carrying = True
-                        break
+                        package["in_hand"] = True
                 toward_package = False
                 if belt_packages:
                     distance = min(math.hypot(worker_center[0] - p["center"][0], worker_center[1] - p["center"][1]) for p in belt_packages)
@@ -867,6 +946,20 @@ def process_video(
                     toward_package,
                 )
                 detected[track_id].update(package_signals)
+                in_work_area = bool(detected[track_id]["work_area_presence"])
+                low_motion_without_handling = bool(
+                    in_work_area
+                    and detected[track_id]["low_motion"]
+                    and not detected[track_id]["possible_belt_interaction"]
+                    and not hand_signal
+                    and not carrying
+                    and not toward_package
+                )
+                detected[track_id]["candidate_low_activity"] = bool(
+                    not in_work_area
+                    or (in_work_area and carrying)
+                    or low_motion_without_handling
+                )
                 if carrying or (belt_packages and (toward_package or hand_signal)):
                     active_worker_ids.add(track_id)
             if _staffing_pressure(len(belt_packages), len(active_worker_ids)):
@@ -877,7 +970,7 @@ def process_video(
                 package_id = package["track_id"]
                 previous = previous_package_positions.get(package_id)
                 if previous is not None:
-                    speed = math.hypot(package["center"][0] - previous[0], package["center"][1] - previous[1]) * (fps / package_frame_stride)
+                    speed = math.hypot(package["center"][0] - previous[0], package["center"][1] - previous[1]) * (effective_analysis_fps / package_frame_stride)
                     if speed > max(width, height) * 0.8:
                         for person in people:
                             track_id = person["track_id"]
@@ -889,7 +982,7 @@ def process_video(
                                 for wi in (9, 10) if wi < len(pose) and pose[wi][2] >= 0.2
                             )
                             if near_hand:
-                                throwing_signal_until_ms[track_id] = timestamp_ms + round(package_frame_stride * 1000 / fps)
+                                throwing_signal_until_ms[track_id] = timestamp_ms + round(package_frame_stride * 1000 / effective_analysis_fps)
                 previous_package_positions[package_id] = package["center"]
             for track_id in list(detected):
                 if timestamp_ms <= throwing_signal_until_ms.get(track_id, -1):
@@ -935,11 +1028,16 @@ def process_video(
             annotated = result.plot()
             for package in packages:
                 px1, py1, px2, py2 = (round(value) for value in package["bbox"])
-                package_color = (0, 210, 255) if package["in_belt"] else (255, 180, 0)
+                highlighted_package = package["in_belt"] or package.get("in_hand", False)
+                package_color = (42, 92, 165) if highlighted_package else (255, 180, 0)
+                package_id = package["track_id"] if package["track_id"] >= 0 else "?"
+                package_label = f"PACKAGE {package_id}"
+                if package.get("in_hand", False):
+                    package_label += " · HAND"
                 cv2.rectangle(annotated, (px1, py1), (px2, py2), package_color, 2)
                 cv2.putText(
                     annotated,
-                    f"{package['label']} P{package['track_id']}",
+                    package_label,
                     (px1, max(18, py1 - 6)),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.5,
@@ -948,10 +1046,11 @@ def process_video(
                     cv2.LINE_AA,
                 )
             cv2.polylines(annotated, [belt_polygon.astype(np.int32)], True, (0, 0, 255), 3)
+            cv2.polylines(annotated, [inner_belt_polygon.astype(np.int32)], True, (0, 165, 255), 1)
             cv2.polylines(annotated, [work_polygon.astype(np.int32)], True, (255, 180, 0), 3)
             cv2.putText(
                 annotated,
-                f"Red: conveyor | Blue: work area | package tracks in belt: {len(belt_packages)} | review candidate signals",
+                f"Red: conveyor | Orange: safety zone | Blue: work area | belt packages: {len(belt_packages)}",
                 (16, 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.65,
@@ -984,14 +1083,30 @@ def process_video(
                 track_id = person["track_id"]
                 if track_id is not None and detected[track_id]["possible_person_in_conveyor_zone"]:
                     x1, y1, _, _ = person["bbox"]
+                    review_text = (
+                        "URGENT REVIEW: PERSON ON BELT"
+                        if detected[track_id]["possible_body_on_conveyor"]
+                        else "REVIEW: FOOT IN CONVEYOR ZONE"
+                    )
+                    review_position = (round(x1), min(height - 12, round(y1) + 28))
                     cv2.putText(
                         annotated,
-                        f"REVIEW T{track_id}: foot in conveyor zone",
-                        (round(x1), max(52, round(y1) - 8)),
+                        review_text,
+                        review_position,
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        0.55,
+                        0.78,
+                        (0, 0, 0),
+                        6,
+                        cv2.LINE_AA,
+                    )
+                    cv2.putText(
+                        annotated,
+                        review_text,
+                        review_position,
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.78,
                         (0, 0, 255),
-                        2,
+                        3,
                         cv2.LINE_AA,
                     )
             if output_width != width or output_height != height:
@@ -1046,6 +1161,7 @@ def process_video(
                 db.commit()
                 if progress:
                     progress(frame_index, frame_count)
+            processed_frame_index += 1
             frame_index += 1
 
         end_ms = round(frame_index * 1000 / fps)
@@ -1094,8 +1210,10 @@ def process_video(
                 event_batch,
             )
         writer.release()
-        _convert_browser_video(intermediate_path, output_path)
+        convert_browser_video(intermediate_path, output_path)
         intermediate_path.unlink(missing_ok=True)
+        _record_staffing_mismatch_events(db, video_id, frame_interval_ms)
+        _write_events_csv(db, video_id, events_path)
         completed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         db.execute(
             """UPDATE videos SET status = 'complete', frame_count = ?,

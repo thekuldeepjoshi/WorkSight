@@ -115,7 +115,7 @@ def summary(db: sqlite3.Connection, video: sqlite3.Row) -> None:
         "distinct_anonymous_tracks": people,
         "person_frame_observations": observations,
         "hand_frame_observations": hand_observations,
-        "tracked_package_observations_sampled_at_about_3_fps": package_observations,
+        "tracked_package_observations": package_observations,
         "package_observations_in_conveyor_zone": conveyor_package_observations or 0,
         "events_by_type": [dict(row) for row in by_type],
         "configured_zones": [dict(row) for row in zones],

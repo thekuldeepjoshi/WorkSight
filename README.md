@@ -13,6 +13,10 @@ python -m pip install -r requirements.txt
 python -m streamlit run app.py
 ```
 
+Detailed MediaPipe hand landmarks need the pinned Protobuf 4 dependency. Streamlit is pinned
+to 1.60 because later Streamlit releases require Protobuf 5+, which MediaPipe does not support.
+Recreate the environment, or reinstall requirements, after pulling this change.
+
 For Intel Macs, use Python 3.12 and `requirements-intel-mac.txt`:
 
 ```bash

@@ -56,6 +56,17 @@ def cached_video_frame(path: str, seconds: int, modified_ns: int, size: int):
         capture.release()
 
 
+@st.cache_data(show_spinner=False)
+def mediapipe_support() -> tuple[bool, str]:
+    """Report whether detailed hand landmarks can be enabled in this environment."""
+    try:
+        import mediapipe as mp
+
+        return True, f"MediaPipe {mp.__version__} is available."
+    except Exception as error:
+        return False, f"MediaPipe is unavailable: {error}"
+
+
 def save_upload(uploaded_file) -> tuple[Path, str]:
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     content = uploaded_file.getbuffer()
@@ -175,11 +186,11 @@ with setup_tab:
         str(source_path), preview_second, source_stat.st_mtime_ns, source_stat.st_size
     )
     height, width = frame.shape[:2]
-    scale = min(900 / width, 600 / height, 1.0)
+    scale = min(1400 / width, 900 / height, 1.0)
     canvas_width = max(1, round(width * scale))
     canvas_height = max(1, round(height * scale))
     display_frame = cv2.resize(frame, (canvas_width, canvas_height))
-    left, right = st.columns([1.5, 1])
+    left, right = st.columns([4, 1])
     with left:
         active_zone = st.selectbox(
             "Zone to draw", ["conveyor", "work_area"],
@@ -198,7 +209,7 @@ with setup_tab:
             height=canvas_height,
             drawing_mode="point",
             stroke_color="#ff3b30" if active_zone == "conveyor" else "#007aff",
-            point_display_radius=7,
+            point_display_radius=3,
             update_streamlit=True,
             key=(
                 f"zone_canvas_{video_id}_{active_zone}_"
@@ -248,34 +259,37 @@ with setup_tab:
 
 with analysis_tab:
     st.subheader("Detect packages, workers, and operational cues")
-    # MediaPipe 0.10.x requires Protobuf <5, which conflicts with current
-    # Streamlit releases. Use YOLO pose wrist keypoints in the supported stack.
-    hand_landmarks_available = False
+    hand_landmarks_available, mediapipe_status = mediapipe_support()
     current_video = get_video(video_id) or {}
-    enable_package_detection = st.checkbox(
-        "Detect and track packages on the conveyor",
-        value=bool(current_video.get("package_detection_enabled", True)),
-        help="Uses Ultralytics YOLO-World. Its first run may need to download a CLIP model; if a network certificate blocks it, worker and pose analysis will still complete.",
-    )
+    enable_hand_landmarks = True
+    if hand_landmarks_available:
+        st.caption(f"Detailed MediaPipe hand landmarks are enabled. {mediapipe_status}")
+    else:
+        st.error(
+            "MediaPipe is required for this analysis but is unavailable. Install the project "
+            "requirements in the Python 3.12 environment, then restart Streamlit."
+        )
+    enable_package_detection = True
     if not {"conveyor", "work_area"}.issubset(zones):
         st.warning("Configure and save both zones before processing this video.")
     else:
         signature = zone_signature(zones)
+        analysis_fps = st.select_slider(
+            "Analysis rate (frames per second)",
+            options=[5, 10, 15, 30],
+            value=10,
+            help="Lower rates process faster. The annotated video keeps the source duration.",
+        )
         already_current = (
             current_video.get("status") == "complete"
             and current_video.get("zone_signature") == signature
             and current_video.get("analysis_version") == ANALYSIS_VERSION
-            and bool(current_video.get("hand_landmarks_enabled")) == hand_landmarks_available
+            and bool(current_video.get("hand_landmarks_enabled")) == enable_hand_landmarks
             and bool(current_video.get("package_detection_enabled")) == enable_package_detection
+            and float(current_video.get("analysis_fps") or 30) == analysis_fps
         )
         if already_current:
             st.success("This video has already been processed with the saved zones.")
-            if enable_package_detection and not current_video.get("package_detection_enabled"):
-                st.warning(
-                    "Worker and pose analysis completed, but package detection could not load its "
-                    "YOLO-World/CLIP model (often a certificate download issue). Package-flow metrics "
-                    "are unavailable for this analysis."
-                )
         elif current_video.get("status") == "complete":
             st.info("The saved analysis predates the current package and operational rules. Reprocess to refresh it.")
         elif current_video.get("status") == "failed" and current_video.get("error"):
@@ -302,12 +316,12 @@ with analysis_tab:
             step=0.1,
         )
         st.caption(
-            "Uses YOLO26 pose and YOLO-World package detections with ByteTrack. Package-near-wrist, approach, throw, belt fullness, and staffing pressure are review candidates, not confirmed actions."
+            "Uses YOLO26 pose and YOLO-World package detections with ByteTrack.ss"
         )
         if st.button(
             "Process video" if not already_current else "Reprocess with these settings",
             type="primary",
-            disabled=not {"conveyor", "work_area"}.issubset(zones),
+            disabled=not {"conveyor", "work_area"}.issubset(zones) or not hand_landmarks_available,
         ):
             progress_bar = st.progress(0.0)
             progress_text = st.empty()
@@ -326,11 +340,15 @@ with analysis_tab:
                     minimum_interaction_seconds=min_interaction,
                     minimum_dwell_seconds=min_dwell,
                     minimum_conveyor_presence_seconds=min_conveyor_presence,
-                    enable_hand_landmarks=hand_landmarks_available,
+                    analysis_fps=analysis_fps,
+                    enable_hand_landmarks=enable_hand_landmarks,
                     enable_package_detection=enable_package_detection,
                     progress=update_progress,
                 )
+                saved_events_path = (get_video(video_id) or {}).get("events_path")
                 st.success(f"Analysis saved. Annotated video: {output_path}")
+                if saved_events_path:
+                    st.caption(f"Events CSV: {saved_events_path}")
                 st.rerun()
             except Exception as error:
                 st.exception(error)
@@ -345,6 +363,7 @@ with report_tab:
         summary = get_summary(video_id)
         output_path = Path(current_video.get("output_path") or "")
         if output_path.is_file():
+            st.caption(f"Saved run folder: {output_path.parent}")
             st.download_button(
                 "Download annotated video",
                 output_path.read_bytes(),
