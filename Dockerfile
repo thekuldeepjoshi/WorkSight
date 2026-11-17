@@ -16,7 +16,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends libglib2.0-0 libgl1 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements-mcp.txt ./
+COPY requirements.txt requirements-mcp.txt ./
 RUN pip install --no-cache-dir -r requirements-mcp.txt
 
 COPY . .
