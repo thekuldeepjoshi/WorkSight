@@ -33,6 +33,21 @@ timestamps in SQLite. The dashboard reads those results without reprocessing
 the video. The read-only MCP server lets Claude query the same SQLite data and
 return operational answers with supporting timestamps.
 
+### Why this architecture
+
+- **React** keeps the customer experience interactive and makes video evidence,
+  timelines, and alerts easy to review.
+- **Flask** provides a small local API for uploads, zones, job status, and files
+  without requiring a separate cloud service.
+- **A background worker** keeps heavy computer-vision processing away from the
+  web interface, so the dashboard remains responsive.
+- **SQLite** is simple to install, works offline, and preserves frame-level
+  evidence without requiring a database server.
+- **Separate model modules** make pose, hand, and package detection easier to
+  test and replace.
+- **MCP** gives Claude read-only access to the same stored evidence instead of
+  asking Claude to reprocess videos or rely on unsupported guesses.
+
 ## Requirements
 
 Local setup needs Python 3.12, Node.js 20+, npm, and these model files in the project root:
@@ -42,18 +57,62 @@ Local setup needs Python 3.12, Node.js 20+, npm, and these model files in the pr
 
 Docker users only need Docker Desktop.
 
-## Local setup
+## Local installation and first run
+
+Follow these steps on a new machine.
+
+### 1. Download the project
 
 ```bash
-cd "/Users/kuldeep/Interview prep/WorkSight"
+git clone https://github.com/thekuldeepjoshi/WorkSight.git
+cd WorkSight
+```
+
+### 2. Check the required tools
+
+```bash
+python3.12 --version
+node --version
+npm --version
+```
+
+Install Python 3.12 and Node.js 20+ if any command is missing.
+
+### 3. Create the Python environment and install dependencies
+
+```bash
 python3.12 -m venv .venv-intel
 ./.venv-intel/bin/python -m pip install --upgrade pip
 ./.venv-intel/bin/python -m pip install -r requirements.txt
 npm ci --prefix dashboard
+```
+
+### 4. Add the model files
+
+Copy `yolo26n-pose.pt` and `yolov8s-world.pt` into the project root. Without
+these files, video processing will stop during model preflight.
+
+### 5. Start the application
+
+```bash
 ./start.sh
 ```
 
 Open http://127.0.0.1:5001. Upload a video, draw conveyor and work-area polygons, choose FPS, and process it. Active processing can be paused, resumed, or cancelled. Stop the app with `Ctrl+C`. Data is stored under `data/`.
+
+### 6. Run it again later
+
+The dependencies do not need to be installed again. From the project folder,
+run only:
+
+```bash
+./start.sh
+```
+
+### 7. Stop or reset the local process
+
+Press `Ctrl+C` in the terminal running WorkSight. The application does not reset
+the database automatically. Existing analyses remain in `data/`.
 
 ## Docker
 
