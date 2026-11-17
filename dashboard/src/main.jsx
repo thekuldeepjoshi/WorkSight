@@ -165,14 +165,13 @@ function App() {
     'possible belt interaction': 4,
   }[event.signal] ?? 5);
   const priorityEvents = [...events].sort((a, b) => (priorityRank(a) - priorityRank(b)) || (b.duration - a.duration)).slice(0, 8);
-  const manualPersonOnBeltEvent = { id: 'manual-person-336-165', seconds: 165, duration: 1, track: '336', signal: 'possible person in conveyor zone', label: '2:45', evidence: 'Manual urgent safety review marker', manual: true };
-  const personOnBeltEvents = [...events.filter((event) => ['possible person in conveyor zone', 'possible body on conveyor'].includes(event.signal)), manualPersonOnBeltEvent].sort((a, b) => a.seconds - b.seconds || b.duration - a.duration);
+  const personOnBeltEvents = events.filter((event) => ['possible person in conveyor zone', 'possible body on conveyor'].includes(event.signal)).sort((a, b) => a.seconds - b.seconds || b.duration - a.duration);
   const personOnBeltTracks = Object.values(personOnBeltEvents.reduce((groups, event) => {
     const track = event.track || 'Unknown';
     if (!groups[track]) groups[track] = { track, events: [] };
     groups[track].events.push(event);
     return groups;
-  }, {})).sort((a, b) => (String(a.track) === '336' ? -1 : String(b.track) === '336' ? 1 : 0) || b.events.length - a.events.length || b.events.reduce((sum, event) => sum + event.duration, 0) - a.events.reduce((sum, event) => sum + event.duration, 0) || String(a.track).localeCompare(String(b.track), undefined, { numeric: true })).slice(0, 10);
+  }, {})).sort((a, b) => b.events.length - a.events.length || b.events.reduce((sum, event) => sum + event.duration, 0) - a.events.reduce((sum, event) => sum + event.duration, 0) || String(a.track).localeCompare(String(b.track), undefined, { numeric: true })).slice(0, 10);
   const windowStart = Math.floor(reviewSecond / 30) * 30;
   const windowEnd = windowStart + 30;
   const windowEvents = events.filter((event) => event.seconds < windowEnd && event.seconds + event.duration >= windowStart);
@@ -375,7 +374,7 @@ function App() {
           <div className="belt-review-timeline">
             {personOnBeltTracks.map((person) => <div className="belt-review-row" key={person.track}>
               <span className="belt-review-label"><b>Person ID {person.track}</b><small>{person.events.length} conveyor cues</small></span>
-              <span className="belt-review-track">{person.events.map((event) => <button type="button" key={event.id} className={`belt-review-segment ${event.signal === 'possible body on conveyor' ? 'belt-review-body' : ''} ${event.manual ? 'belt-review-manual' : ''}`} style={{ left: `${100 * event.seconds / timelineSeconds}%`, width: `${Math.max(0.8, 100 * event.duration / timelineSeconds)}%` }} onClick={() => seek(event)} title={`${event.manual ? 'URGENT SAFETY REVIEW · Manual marker' : 'Person ID ' + event.track + ' · ' + event.signal} · ${event.label}–${fmt(event.seconds + event.duration)} · ${event.evidence || 'No additional evidence'}`}/>)}</span>
+              <span className="belt-review-track">{person.events.map((event) => <button type="button" key={event.id} className={`belt-review-segment ${event.signal === 'possible body on conveyor' ? 'belt-review-body' : ''}`} style={{ left: `${100 * event.seconds / timelineSeconds}%`, width: `${Math.max(0.8, 100 * event.duration / timelineSeconds)}%` }} onClick={() => seek(event)} title={`Person ID ${event.track} · ${event.signal} · ${event.label}–${fmt(event.seconds + event.duration)} · ${event.evidence || 'No additional evidence'}`}/>)}</span>
               <span className="belt-review-kind">Orange: zone · <strong>◆</strong> body</span>
             </div>)}
             {personOnBeltTracks.length === 0 && <p className="priority-empty">No person-on-conveyor signals were recorded.</p>}
