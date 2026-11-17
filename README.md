@@ -100,6 +100,13 @@ these files, video processing will stop during model preflight.
 
 Open http://127.0.0.1:5001. Upload a video, draw conveyor and work-area polygons, choose FPS, and process it. Active processing can be paused, resumed, or cancelled. Stop the app with `Ctrl+C`. Data is stored under `data/`.
 
+## Included demo files
+
+The shared ZIP package includes the original video, an annotated video, and its
+events CSV. You can use the original video to run a new analysis, or load the
+annotated video and CSV directly in the dashboard to review the supplied
+analysis. You are also welcome to upload and process another video.
+
 ### 6. Run it again later
 
 The dependencies do not need to be installed again. From the project folder,
