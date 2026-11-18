@@ -1,11 +1,14 @@
-# Model loading and MediaPipe hand detection for worksight.pipeline.
+"""Load the vision models and turn their output into frame detections."""
 
-"""Mandatory model preflight shared by the worker and validation script."""
+import math
+
+import cv2
 
 from worksight.config import ROOT
 
 
 def load_models(pose_name="yolo26n-pose.pt"):
+    """Load pose, package, and hand models once for a processing run."""
     from ultralytics import YOLO
     import mediapipe as mp
 
@@ -26,14 +29,41 @@ def load_models(pose_name="yolo26n-pose.pt"):
         raise RuntimeError(f"Mandatory model preflight failed: {error}") from error
 
 
-def detect_hands(model, frame, people):
-    """Inspect worker and wrist crops, then map landmarks into full-video coordinates."""
-    import cv2
-    import math
-    from types import SimpleNamespace
+def track_objects(model, frame, *, confidence, **options):
+    """Detect objects and keep a stable track ID between video frames."""
+    """Run YOLO with ByteTrack and unpack boxes, track IDs, and any pose points."""
+    result = model.track(
+        frame, persist=True, tracker="bytetrack.yaml", conf=confidence,
+        verbose=False, **options,
+    )[0]
+    boxes = result.boxes
+    if boxes is None:
+        return result, []
 
+    coordinates = boxes.xyxy.cpu().tolist()
+    scores = boxes.conf.cpu().tolist()
+    track_ids = boxes.id.int().cpu().tolist() if boxes.id is not None else [None] * len(boxes)
+    class_ids = boxes.cls.int().cpu().tolist()
+    poses = result.keypoints.data.cpu().tolist() if result.keypoints is not None else []
+    detections = []
+    for index, bbox in enumerate(coordinates):
+        track_id = track_ids[index]
+        detections.append({
+            "track_id": track_id if track_id is not None and track_id >= 0 else None,
+            "bbox": tuple(bbox),
+            "confidence": scores[index],
+            "label": str(result.names.get(class_ids[index], "package")),
+            "pose": poses[index] if index < len(poses) else [],
+        })
+    return result, detections
+
+
+def detect_hands(model, frame, people):
+    """Find hand landmarks inside each visible person's bounding box."""
+    """Find hands in worker and wrist crops and map them back to the full frame."""
     height, width = frame.shape[:2]
-    landmarks, handedness, wrists = [], [], []
+    hands = []
+    wrists = []
     for person in people:
         x1, y1, x2, y2 = person["bbox"]
         pad = max(12, (x2 - x1) * .15)
@@ -55,13 +85,22 @@ def detect_hands(model, frame, people):
                 crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
             result = model.process(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
             for index, hand in enumerate(result.multi_hand_landmarks or []):
-                points = [SimpleNamespace(x=(left + p.x * (right - left)) / width,
-                                          y=(top + p.y * (bottom - top)) / height,
-                                          z=p.z) for p in hand.landmark]
-                wrist = (points[0].x * width, points[0].y * height)
+                normalized = [
+                    ((left + p.x * (right - left)) / width, (top + p.y * (bottom - top)) / height)
+                    for p in hand.landmark
+                ]
+                points = [(x * width, y * height) for x, y in normalized]
+                wrist = points[0]
                 if any(math.hypot(wrist[0] - x, wrist[1] - y) < max(12, (y2 - y1) * .05) for x, y in wrists):
                     continue
                 wrists.append(wrist)
-                landmarks.append(SimpleNamespace(landmark=points))
-                handedness.append(result.multi_handedness[index])
-    return SimpleNamespace(multi_hand_landmarks=landmarks, multi_handedness=handedness)
+                labels = result.multi_handedness or []
+                classifications = labels[index].classification if index < len(labels) else []
+                label = classifications[0] if classifications else None
+                hands.append({
+                    "points": points,
+                    "landmarks": [[round(x, 6), round(y, 6)] for x, y in normalized],
+                    "handedness": label.label if label else "unknown",
+                    "confidence": float(label.score) if label else 0.0,
+                })
+    return hands

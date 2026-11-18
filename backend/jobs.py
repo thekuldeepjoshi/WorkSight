@@ -16,6 +16,7 @@ ACTIVE_STATUSES = ("queued", "processing", "paused")
 
 
 def now():
+    """Return a UTC timestamp for database status updates."""
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -33,18 +34,23 @@ def update_run(db, run_id, *, status=None, progress=None, error=None, expected=N
 
 
 class Jobs:
+    """Manage the single video-processing subprocess used by the local app."""
+
     def __init__(self):
+        """Keep the active process and run ID safe across API requests."""
         self.lock = threading.Lock()
         self.process = None
         self.run_id = None
 
     def close(self):
+        """Stop the worker when the API server closes."""
         with self.lock:
             if self.process is not None and self.process.poll() is None:
                 self._stop_worker(self.process)
 
     @staticmethod
     def _stop_worker(process):
+        """Ask a worker to stop, then force it only if it does not exit."""
         process.terminate()
         process.send_signal(signal.SIGCONT)
         try:
@@ -54,6 +60,7 @@ class Jobs:
             process.wait()
 
     def recover(self):
+        """Mark jobs interrupted by a server restart as failed."""
         # Called once by the single local server at startup; interrupted runs can be rerun.
         with connect_db() as db:
             interrupted = db.execute("SELECT id FROM runs WHERE status IN (?, ?, ?)", ACTIVE_STATUSES).fetchall()
@@ -62,6 +69,7 @@ class Jobs:
             db.execute("UPDATE videos SET status='failed', error='Processing interrupted by server restart' WHERE status='processing'")
 
     def start(self, source_id, fps):
+        """Copy the zones and launch processing for an uploaded video."""
         with self.lock:
             if self.process is not None and self.process.poll() is None:
                 raise ValueError("A video is already processing. Wait for it to finish.")
@@ -91,6 +99,7 @@ class Jobs:
             return run_id
 
     def _watch(self, process, run_id):
+        """Mark the run as failed if its worker exits with an error."""
         code = process.wait()
         if code:
             with self.lock:
@@ -101,6 +110,7 @@ class Jobs:
                                    error=f"Worker exited ({code}). See data/logs/{run_id}.log")
 
     def status(self, run_id):
+        """Read the latest run status from SQLite."""
         with connect_db() as db:
             row = db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         if not row:
@@ -108,12 +118,14 @@ class Jobs:
         return dict(row)
 
     def _owned_process(self, run_id):
+        """Return the active process only when it belongs to this run."""
         process = self.process
         if process is None or run_id != self.run_id or process.poll() is not None:
             raise ValueError("No active processing job")
         return process, self.status(run_id)["status"]
 
     def pause(self, run_id):
+        """Pause a running worker without losing its current frame."""
         with self.lock:
             process, status = self._owned_process(run_id)
             if status != "processing":
@@ -124,6 +136,7 @@ class Jobs:
             process.send_signal(signal.SIGSTOP)
 
     def resume(self, run_id):
+        """Continue a worker from its paused frame."""
         with self.lock:
             process, status = self._owned_process(run_id)
             if status != "paused":
@@ -133,6 +146,7 @@ class Jobs:
                 update_run(db, run_id, status="processing", expected=status)
 
     def cancel(self, run_id):
+        """Stop processing and mark the run as cancelled."""
         with self.lock:
             process, status = self._owned_process(run_id)
             if status not in ACTIVE_STATUSES:

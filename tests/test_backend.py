@@ -13,10 +13,11 @@ from backend.app import create_app
 from backend import jobs, routes
 from scripts.query_worksight import imbalances
 from worksight import pipeline, storage
-from worksight.csv_io import read_events
+from worksight.csv_io import read_events, write_events_csv
 
 
 class BackendTests(unittest.TestCase):
+    """Check API, database, import, job, and export behaviour."""
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -86,10 +87,10 @@ class BackendTests(unittest.TestCase):
         storage.ensure_video('v', 'test.mp4', self.clip)
         target = self.root / 'export.csv'
         with storage.connect_db() as db:
-            pipeline._write_events_csv(db, 'v', target)
+            write_events_csv(db, 'v', target)
             self.assertEqual(read_events(target), [])
             db.execute("INSERT INTO events VALUES (1,'v',7,'candidate_low_activity',125,1025,1000,1,.9,'{}')")
-            pipeline._write_events_csv(db, 'v', target)
+            write_events_csv(db, 'v', target)
             event = read_events(target)[0]
             self.assertEqual(event['seconds'], .125)
             self.assertEqual(event['duration'], 1)

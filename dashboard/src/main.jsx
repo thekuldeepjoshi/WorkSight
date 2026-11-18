@@ -11,6 +11,7 @@ import './styles.css';
 import './theme.css';
 import Workspace from './Workspace';
 const EVENT_PRESENTATION = {
+  // Maps raw database signals to user-friendly labels and explanations.
   'candidate available no belt demand': {
     label: 'Idle / available candidate', type: 'worker',
     explanation: 'No package was detected on the belt or estimated near this worker. This suggests availability; check the clip before calling the worker idle.',
@@ -66,6 +67,7 @@ const EVENT_PRESENTATION = {
 };
 
 function presentEvent(event) {
+  // Uses a known label when possible and a safe fallback for new signals.
   return EVENT_PRESENTATION[event.signal] || {
     label: event.signal.replace(/\b\w/g, (letter) => letter.toUpperCase()),
     type: 'other',
@@ -74,6 +76,7 @@ function presentEvent(event) {
 }
 
 const TOPIC_SIGNALS = {
+  // Groups signals behind the five operational review buttons.
   worker: new Set([
     'work area presence', 'candidate available no belt demand',
     'candidate working with package', 'candidate low activity', 'candidate waiting full belt',
@@ -96,17 +99,11 @@ const TOPIC_SIGNALS = {
 };
 
 function App() {
+  // Holds the loaded report, video position, and dashboard selections.
   const [screen, setScreen] = useState('upload');
-  const [events, setEvents] = useState([]);
-  const [source, setSource] = useState('');
-  const [videoUrl, setVideoUrl] = useState('');
-  const [videoSeconds, setVideoSeconds] = useState(0);
-  const [csvName, setCsvName] = useState('');
-  const [analysisLoaded, setAnalysisLoaded] = useState(false);
-  const [csvDownloadUrl, setCsvDownloadUrl] = useState('');
-  const [csvError, setCsvError] = useState('');
+  const [analysis, setAnalysis] = useState(null);
+  const [playbackDuration, setPlaybackDuration] = useState(null);
   const [videoError, setVideoError] = useState('');
-  const [videoValid, setVideoValid] = useState(false);
   const [active, setActive] = useState(null);
   const [selectedTopic, setSelectedTopic] = useState('all');
   const [topicDetailsOpen, setTopicDetailsOpen] = useState(false);
@@ -115,16 +112,16 @@ function App() {
   const [notice, setNotice] = useState('Add your WorkSight events CSV and video to load the operations report.');
   const videoRef = useRef(null);
   const topicDetailsRef = useRef(null);
-  const csvValid = analysisLoaded && !csvError;
+  const {
+    events = [], video_name: source, video_url: videoUrl,
+    csv_name: csvName, csv_url: csvDownloadUrl, duration = 0,
+  } = analysis ?? {};
+  const videoSeconds = playbackDuration ?? duration;
   const latestEventTime = events.reduce((latest, event) => Math.max(latest, event.seconds + event.duration), 0);
-  const timestampsMatch = !videoValid || latestEventTime <= videoSeconds + 1;
-  const dataReady = csvValid && videoValid && timestampsMatch;
+  const dataReady = Boolean(analysis) && !videoError && latestEventTime <= videoSeconds + 1;
 
   const activeEvent = events.find((event) => event.id === active) || null;
-  const urgentSafetyEvents = events.filter((event) => event.signal === 'possible body on conveyor');
-  const urgentSafetyEvent = activeEvent?.signal === 'possible body on conveyor'
-    ? activeEvent
-    : urgentSafetyEvents[0] || null;
+  // Builds the summary counts and timelines directly from loaded CSV events.
   const topicEvents = Object.fromEntries(Object.entries(TOPIC_SIGNALS).map(([topic, signals]) => [
     topic,
     events.filter((event) => signals.has(event.signal)),
@@ -178,10 +175,11 @@ function App() {
   const timelineSeconds = Math.max(1, videoSeconds, latestEventTime);
 
   const seekTo = (seconds, label, eventId = null) => {
+    // Moves the main video to the evidence timestamp selected by the user.
     setActive(eventId);
     setReviewSecond(seconds);
     const player = videoRef.current;
-    if (!player || !videoValid) { setNotice('Video is not ready yet. Wait for both files to validate before opening an event.'); return; }
+    if (!player || !dataReady) { setNotice('Video is not ready yet. Wait for both files to validate before opening an event.'); return; }
     const duration = Number.isFinite(player.duration) ? player.duration : videoSeconds;
     player.currentTime = Math.max(0, Math.min(seconds, duration));
     document.querySelector('#review')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -189,34 +187,31 @@ function App() {
   };
   const seek = (event) => seekTo(event.seconds, event.label, event.id);
   const showTopicDetails = (topic) => {
+    // Opens a topic's event timeline and scrolls it into view.
     setSelectedTopic(topic);
     setTopicDetailsOpen(true);
     window.setTimeout(() => topicDetailsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
   };
-  const loadAnalysis = (analysis) => {
-    setCsvError(''); setVideoError(''); setSelectedTopic('all'); setActive(null);
+  const loadAnalysis = (report) => {
+    // Replaces the current report and resets dashboard filters.
+    setAnalysis(report);
+    setPlaybackDuration(null);
+    setVideoError(''); setSelectedTopic('all'); setActive(null);
     setSelectedSlowdownTrack(null); setTopicDetailsOpen(false); setReviewSecond(0);
-    setEvents(analysis.events); setVideoUrl(analysis.video_url);
-    setCsvDownloadUrl(analysis.csv_url); setSource(analysis.video_name);
-    setCsvName(analysis.csv_name); setVideoSeconds(analysis.duration);
-    setAnalysisLoaded(true); setVideoValid(true); setScreen('overview');
-    setNotice(analysis.warnings.length ? analysis.warnings.join(' ') : `${analysis.video_name} · ${analysis.events.length} review events. Metrics describe exported evidence; throughput and capacity are not measured.`);
+    setScreen('overview');
+    setNotice(report.warnings.length ? report.warnings.join(' ') : `${report.video_name} · ${report.events.length} review events. Metrics describe exported evidence; throughput and capacity are not measured.`);
   };
   const markVideoReady = () => {
+    // Confirms the browser can read the video before enabling event seeking.
     const player = videoRef.current;
     if (!player || !Number.isFinite(player.duration) || player.duration <= 0) {
       setVideoError('The video has no readable duration. Choose another video export.'); return;
     }
-    setVideoSeconds(player.duration); setVideoValid(true); setVideoError('');
+    setPlaybackDuration(player.duration);
     setNotice(`Validated ${source} (${fmt(player.duration)}).`);
   };
-  const downloadReview = () => {
-    if (csvDownloadUrl) { window.location.assign(csvDownloadUrl); return; }
-    const rows = [['Time', 'Track', 'Signal', 'Duration (s)', 'Confidence', 'Evidence rule', 'Interpretation'], ...events.map((e) => [e.label, e.track, e.signal, e.duration, e.confidence, e.evidence, e.interpretation])];
-    const csv = rows.map((r) => r.map((v) => `"${String(v).replaceAll('"', '""')}"`).join(',')).join('\n');
-    const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); link.download = 'worksight-review.csv'; link.click(); URL.revokeObjectURL(link.href);
-  };
 
+  // Renders either the upload workspace or the completed operations report.
   return <div className={`app-shell ${screen === 'upload' ? 'upload-app-shell' : ''}`}>
     {screen !== 'upload' && <aside className="sidebar">
       <button type="button" className="brand brand-home" aria-label="Go to WorkSight home" onClick={() => setScreen('upload')}><div className="brand-mark"><ScanLine size={19}/></div><span>worksight<span className="brand-dot">.</span></span></button>
@@ -273,7 +268,7 @@ function App() {
           </div>
           <div className="video-frame">
             <video ref={videoRef} src={videoUrl} controls playsInline preload="metadata" onCanPlay={markVideoReady}
-              onError={() => { setVideoValid(false); setVideoError(`Browser cannot decode ${source}. Choose a playable H.264 MP4 or convert the video before loading it.`); }}
+              onError={() => setVideoError(`Browser cannot decode ${source}. Choose a playable H.264 MP4 or convert the video before loading it.`)}
               onTimeUpdate={(e) => {
                 const second = Math.floor(e.currentTarget.currentTime);
                 setReviewSecond((current) => current === second ? current : second);
@@ -329,7 +324,7 @@ function App() {
         <section className="panel event-panel compact-event-panel" aria-label="Events">
           <div className="panel-heading">
             <div><div className="eyebrow">REVIEW EVENTS</div><h2>Events and risk cues</h2><p>Labels describe what the model detected; verify the moment in the video.</p></div>
-            <div className="event-actions"><span className="count-pill">{filteredEvents.length} events</span>{selectedTopic !== 'all' && <button className="small-button" onClick={() => setSelectedTopic('all')}>All events</button>}<button className="small-button" onClick={downloadReview}><Download size={14}/> Export CSV</button></div>
+            <div className="event-actions"><span className="count-pill">{filteredEvents.length} events</span>{selectedTopic !== 'all' && <button className="small-button" onClick={() => setSelectedTopic('all')}>All events</button>}<a className="small-button" href={csvDownloadUrl}><Download size={14}/> Export CSV</a></div>
           </div>
           <div className="review-event-list">
             {filteredEvents.map((event) => {

@@ -35,6 +35,7 @@ EVENT_TYPES = (
 
 
 def label_time(milliseconds: int | float) -> str:
+    """Format a database timestamp for human-readable evidence."""
     seconds = max(0, int(milliseconds // 1000))
     hours, remainder = divmod(seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
@@ -44,6 +45,7 @@ def label_time(milliseconds: int | float) -> str:
 
 
 def list_videos(db: sqlite3.Connection) -> list[dict]:
+    """List analyses that can be queried by the skill or MCP server."""
     rows = db.execute(
         """SELECT id, source_name, status, duration_seconds, processed_at,
                   source_path, output_path
@@ -61,6 +63,7 @@ def list_videos(db: sqlite3.Connection) -> list[dict]:
 
 
 def select_video(db: sqlite3.Connection, video_id: str | None) -> sqlite3.Row:
+    """Choose the requested analysis, or the latest completed one."""
     if video_id:
         row = db.execute("SELECT * FROM videos WHERE id = ?", (video_id,)).fetchone()
     else:
@@ -75,6 +78,7 @@ def select_video(db: sqlite3.Connection, video_id: str | None) -> sqlite3.Row:
 
 
 def summary(db: sqlite3.Connection, video: sqlite3.Row) -> dict:
+    """Summarize duration, detections, and event totals for one video."""
     video_id = video["id"]
     people, observations = db.execute(
         """SELECT COUNT(DISTINCT track_id), COUNT(*) FROM detections
@@ -135,6 +139,7 @@ def summary(db: sqlite3.Connection, video: sqlite3.Row) -> dict:
 
 
 def timeline(db: sqlite3.Connection, video: sqlite3.Row, *, window=60, order="busy", limit=20) -> dict:
+    """Group worker activity into fixed video time windows."""
     if window <= 0 or limit <= 0:
         raise ValueError("Window and limit must be positive.")
     if order not in {"busy", "quiet", "events"}:
@@ -205,6 +210,7 @@ def timeline(db: sqlite3.Connection, video: sqlite3.Row, *, window=60, order="bu
 
 def imbalances(db: sqlite3.Connection, video: sqlite3.Row, *, window=30, min_present=3,
                max_active=1, min_frames=3, limit=20) -> dict:
+    """Find windows with enough workers present but too few active."""
     if min(window, min_present, min_frames, limit) <= 0 or max_active < 0:
         raise ValueError("Window, minimum presence, minimum frames, and limit must be positive. Maximum activity cannot be negative.")
     window_ms = window * 1000
@@ -252,6 +258,7 @@ def imbalances(db: sqlite3.Connection, video: sqlite3.Row, *, window=30, min_pre
 
 
 def events(db: sqlite3.Connection, video: sqlite3.Row, *, event_type=None, limit=100) -> dict:
+    """Return review events with timestamps and supporting evidence."""
     if event_type and event_type not in EVENT_TYPES:
         raise ValueError(f"Unknown event type: {event_type}")
     query = """SELECT id, track_id, event_type, start_ms, end_ms, duration_ms,
@@ -274,6 +281,7 @@ def events(db: sqlite3.Connection, video: sqlite3.Row, *, event_type=None, limit
 
 
 def main() -> int:
+    """Parse the command and print a JSON answer for Claude or a user."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", type=Path, default=DB_PATH, help="WorkSight SQLite database path")
     sub = parser.add_subparsers(dest="command", required=True)

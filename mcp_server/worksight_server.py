@@ -21,6 +21,7 @@ mcp = FastMCP("worksight-ops")
 
 
 def query_analysis(query, video_id, **options):
+    """Open the local database and run one shared analysis query."""
     with closing(open_readonly(DB_PATH)) as db:
         result = query(db, queries.select_video(db, video_id.strip()), **options)
     return json.dumps(result, ensure_ascii=False)

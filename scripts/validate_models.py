@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 
 
 def main():
+    """Load every required model and report setup problems early."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("video", type=Path)
     parser.add_argument("--start", type=float, default=0)

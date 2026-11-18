@@ -18,6 +18,7 @@ api = Blueprint("api", __name__)
 
 
 def required_video(video_id):
+    """Load a video record or report an unknown ID."""
     video = get_video(video_id)
     if not video:
         raise LookupError("Unknown video ID")
@@ -25,6 +26,7 @@ def required_video(video_id):
 
 
 def store_file(field, folder, extensions):
+    """Validate and save one uploaded file."""
     file = request.files.get(field)
     if not file or not file.filename or Path(file.filename).suffix.lower() not in extensions:
         raise ValueError(f"Select a valid {field} file ({', '.join(extensions)})")
@@ -36,6 +38,7 @@ def store_file(field, folder, extensions):
 
 
 def analysis_response(video, csv_path, video_url, csv_url):
+    """Build the dashboard response from a video and its event CSV."""
     events = read_events(csv_path)
     metadata = inspect_video(Path(video["source_path"]))
     latest = max((e["seconds"] + e["duration"] for e in events), default=0)
@@ -54,6 +57,7 @@ def analysis_response(video, csv_path, video_url, csv_url):
 
 @api.get("/health")
 def health():
+    """Report whether the API and required model files are available."""
     import importlib.util
     return jsonify(status="ok", models={"pose_weights": (ROOT / "yolo26n-pose.pt").is_file(),
         "package_weights": (ROOT / "yolov8s-world.pt").is_file(),
@@ -63,11 +67,13 @@ def health():
 
 @api.get("/videos")
 def videos():
+    """List uploaded videos and completed analyses."""
     return jsonify(list_videos())
 
 
 @api.post("/videos")
 def upload():
+    """Save a new source video and return its basic metadata."""
     video_id = uuid4().hex
     folder = UPLOADS_DIR / video_id
     folder.mkdir(parents=True)
@@ -79,6 +85,7 @@ def upload():
 
 @api.get("/videos/<video_id>/frame")
 def preview_frame(video_id):
+    """Return one video frame for drawing operational zones."""
     import cv2
     video = required_video(video_id)
     capture = cv2.VideoCapture(video["source_path"])
@@ -100,6 +107,7 @@ def preview_frame(video_id):
 
 @api.route("/videos/<video_id>/zones", methods=["GET", "PUT"])
 def zones(video_id):
+    """Read or replace the conveyor and work-area polygons."""
     required_video(video_id)
     if request.method == "PUT":
         save_zones(video_id, request.get_json())
@@ -108,6 +116,7 @@ def zones(video_id):
 
 @api.post("/videos/<video_id>/runs")
 def start_run(video_id):
+    """Start video processing at the selected analysis FPS."""
     fps = float((request.get_json() or {}).get("analysis_fps", 5))
     if fps not in (5, 10, 15, 30):
         raise ValueError("Choose 5, 10, 15 or 30 FPS")
@@ -116,29 +125,34 @@ def start_run(video_id):
 
 @api.get("/runs/<run_id>")
 def run_status(run_id):
+    """Return progress for a processing run."""
     return jsonify(current_app.extensions["jobs"].status(run_id))
 
 
 @api.post("/runs/<run_id>/pause")
 def pause_run(run_id):
+    """Pause the active processing run."""
     current_app.extensions["jobs"].pause(run_id)
     return jsonify(current_app.extensions["jobs"].status(run_id))
 
 
 @api.post("/runs/<run_id>/resume")
 def resume_run(run_id):
+    """Resume the paused processing run."""
     current_app.extensions["jobs"].resume(run_id)
     return jsonify(current_app.extensions["jobs"].status(run_id))
 
 
 @api.post("/runs/<run_id>/cancel")
 def cancel_run(run_id):
+    """Cancel the active processing run."""
     current_app.extensions["jobs"].cancel(run_id)
     return jsonify(current_app.extensions["jobs"].status(run_id))
 
 
 @api.get("/analyses/<video_id>")
 def analysis(video_id):
+    """Return a completed analysis for the React dashboard."""
     video = required_video(video_id)
     if video["status"] != "complete":
         raise ValueError("Analysis is not complete")
@@ -147,6 +161,7 @@ def analysis(video_id):
 
 @api.get("/analyses/<video_id>/<kind>")
 def output(video_id, kind):
+    """Serve an annotated video or its event CSV."""
     video = required_video(video_id)
     if kind not in ("video", "csv") or video["status"] != "complete":
         raise LookupError("Output unavailable")
@@ -157,6 +172,7 @@ def output(video_id, kind):
 
 
 def import_folder(analysis_id):
+    """Resolve a safe folder for an imported analysis."""
     if len(analysis_id) != 32 or any(c not in "0123456789abcdef" for c in analysis_id):
         raise LookupError("Unknown import ID")
     return DATA_DIR / "dashboard_imports" / analysis_id
@@ -164,6 +180,7 @@ def import_folder(analysis_id):
 
 @api.post("/imports")
 def import_analysis():
+    """Load an existing video and CSV without processing again."""
     analysis_id = uuid4().hex
     folder = import_folder(analysis_id)
     folder.mkdir(parents=True)
@@ -177,6 +194,7 @@ def import_analysis():
 
 @api.get("/imports")
 def imports():
+    """List analyses previously imported into the dashboard."""
     base = DATA_DIR / "dashboard_imports"
     records = []
     if base.exists():
@@ -188,6 +206,7 @@ def imports():
 
 @api.get("/imports/<analysis_id>")
 def imported(analysis_id):
+    """Return one imported analysis to the dashboard."""
     metadata = import_folder(analysis_id) / "analysis.json"
     if not metadata.is_file():
         raise LookupError("Unknown import ID")
@@ -197,6 +216,7 @@ def imported(analysis_id):
 
 @api.get("/imports/<analysis_id>/<kind>")
 def imported_output(analysis_id, kind):
+    """Serve the video or CSV belonging to an imported analysis."""
     metadata = import_folder(analysis_id) / "analysis.json"
     if not metadata.is_file():
         raise LookupError("Unknown import ID")

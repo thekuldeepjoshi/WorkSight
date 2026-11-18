@@ -11,6 +11,7 @@ from pathlib import Path
 from worksight.config import DATA_DIR, DB_PATH
 
 def connect_db() -> sqlite3.Connection:
+    """Open SQLite with named columns and foreign-key checks enabled."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
@@ -19,6 +20,7 @@ def connect_db() -> sqlite3.Connection:
     return connection
 
 def initialize_db() -> None:
+    """Create the local tables used by processing and reporting."""
     with connect_db() as db:
         db.executescript(
             """
@@ -142,6 +144,7 @@ def initialize_db() -> None:
             db.execute("ALTER TABLE videos ADD COLUMN events_path TEXT")
 
 def ensure_video(video_id: str, source_name: str, source_path: Path) -> None:
+    """Create or update the database record for a source video."""
     initialize_db()
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with connect_db() as db:
@@ -155,6 +158,7 @@ def ensure_video(video_id: str, source_name: str, source_path: Path) -> None:
         )
 
 def save_zones(video_id: str, zones: dict) -> None:
+    """Validate and save the conveyor and work-area polygons."""
     """Validate both polygons and write them in a single transaction."""
     if not isinstance(zones, dict):
         raise ValueError("Provide the conveyor and work-area zones.")
@@ -180,6 +184,7 @@ def save_zones(video_id: str, zones: dict) -> None:
         )
 
 def get_zones(video_id: str) -> dict[str, list[list[float]]]:
+    """Load normalized zone points for a video."""
     with connect_db() as db:
         rows = db.execute(
             "SELECT name, points_json FROM zones WHERE video_id = ?", (video_id,)
@@ -187,10 +192,12 @@ def get_zones(video_id: str) -> dict[str, list[list[float]]]:
     return {row["name"]: json.loads(row["points_json"]) for row in rows}
 
 def zone_signature(zones: dict[str, list[list[float]]]) -> str:
+    """Create a stable fingerprint used to identify a zone layout."""
     encoded = json.dumps(zones, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 def list_videos() -> list[dict]:
+    """List video records with the newest first."""
     initialize_db()
     with connect_db() as db:
         rows = db.execute(
@@ -200,11 +207,13 @@ def list_videos() -> list[dict]:
     return [dict(row) for row in rows]
 
 def get_video(video_id: str) -> dict | None:
+    """Return one video record, or None when it does not exist."""
     with connect_db() as db:
         row = db.execute("SELECT * FROM videos WHERE id = ?", (video_id,)).fetchone()
     return dict(row) if row else None
 
 def open_readonly(path: Path) -> sqlite3.Connection:
+    """Open a SQLite file without allowing accidental changes."""
     if not path.is_file():
         raise FileNotFoundError(f"WorkSight database not found: {path}")
     uri = f"{path.resolve().as_uri()}?mode=ro"
@@ -215,12 +224,14 @@ def open_readonly(path: Path) -> sqlite3.Connection:
 
 
 def table_exists(db: sqlite3.Connection, name: str) -> bool:
+    """Check whether a table exists before running optional queries."""
     return db.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
     ).fetchone() is not None
 
 
 def frame_counts(db: sqlite3.Connection, video_id: str) -> list[sqlite3.Row]:
+    """Count workers, hands, and packages for each analysed frame."""
     """Count same-frame presence and wrist or fingertip cues for each video."""
     hand_candidate_sql = "0"
     if table_exists(db, "hand_detections"):
@@ -242,6 +253,7 @@ def frame_counts(db: sqlite3.Connection, video_id: str) -> list[sqlite3.Row]:
 
 
 def flush_evidence(db, observation_batch, hand_batch, package_batch, event_batch, *, final=False):
+    """Write buffered detections and events in one database transaction."""
     """Write ready batches during processing and all remaining rows at the end."""
     batches = (
         (observation_batch, 500,

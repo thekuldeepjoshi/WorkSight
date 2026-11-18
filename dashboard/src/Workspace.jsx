@@ -4,6 +4,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 
 export async function api(path, options = {}) {
+  // Calls the Flask API and turns failed responses into readable errors.
   const response = await fetch(`/api${path}`, options);
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
@@ -11,6 +12,7 @@ export async function api(path, options = {}) {
 }
 
 export default function Workspace({ onLoad }) {
+  // Holds upload, zone drawing, and processing-job state.
   const [mode, setMode] = useState('process');
   const [videoFile, setVideoFile] = useState(null);
   const [csvFile, setCsvFile] = useState(null);
@@ -28,6 +30,7 @@ export default function Workspace({ onLoad }) {
   const drag = useRef(null);
 
   useEffect(() => { api('/videos').then(setSaved).catch(e => setError(e.message)); }, []);
+  // Restores saved imports and any run that was active before a page refresh.
   useEffect(() => {
     api('/imports').then(setImports).catch(e => setError(e.message));
     const pending = localStorage.getItem('worksight-pending-run');
@@ -37,6 +40,7 @@ export default function Workspace({ onLoad }) {
     }).catch(() => localStorage.removeItem('worksight-pending-run'));
   }, []);
   useEffect(() => {
+    // Polls the active run until processing completes or fails.
     if (!job || !['queued', 'processing'].includes(job.status)) return;
     let disposed = false;
     const timer = setInterval(async () => {
@@ -55,15 +59,18 @@ export default function Workspace({ onLoad }) {
   }, [job?.id, job?.status]);
 
   async function perform(action) {
+    // Gives all user actions the same loading and error handling.
     setBusy(true); setError('');
     try { await action(); } catch (e) { setError(e.message); }
     finally { setBusy(false); }
   }
   function point(e) {
+    // Converts a mouse position into reusable coordinates from zero to one.
     const local = new DOMPoint(e.clientX, e.clientY).matrixTransform(svg.current.getScreenCTM().inverse());
     return [Math.max(0, Math.min(1, local.x / video.width)), Math.max(0, Math.min(1, local.y / video.height))];
   }
   const processing = job && ['queued', 'processing'].includes(job.status);
+  // Shows either file import or video processing with an editable SVG zone layer.
   return <section className="panel workspace-panel">
     <div className="workspace-actions">
       <button className={`button ${mode === 'process' ? 'primary' : 'secondary'}`} onClick={() => setMode('process')}>Process new video</button>
