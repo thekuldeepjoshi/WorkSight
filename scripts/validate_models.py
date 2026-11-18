@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,7 +23,7 @@ def main():
     os.environ["WORKSIGHT_DB"] = str((args.output / "validation.sqlite3").resolve())
     import cv2
     from uuid import uuid4
-    from WorkSight import process_video
+    from worksight.pipeline import process_video
     from worksight.storage import connect_db
 
     capture = cv2.VideoCapture(str(args.video.resolve()))

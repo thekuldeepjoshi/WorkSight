@@ -1,3 +1,6 @@
+// Main React dashboard: loads analysis data, renders metrics/timelines/video evidence, and seeks the HTML video player.
+// It receives API-shaped records from Workspace.jsx and the Flask routes, and uses display rules local to this component.
+
 import React, { useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
@@ -157,15 +160,8 @@ function App() {
   const maxMinuteActivity = Math.max(1, ...minuteActivity.map((item) => item.seconds));
   const leastActivity = Math.min(...minuteActivity.map((item) => item.seconds));
   const mostActivity = Math.max(...minuteActivity.map((item) => item.seconds));
-  const priorityRank = (event) => ({
-    'possible body on conveyor': 0,
-    'possible person in conveyor zone': 1,
-    'candidate low activity': 2,
-    'candidate belt bottleneck': 3,
-    'possible belt interaction': 4,
-  }[event.signal] ?? 5);
-  const priorityEvents = [...events].sort((a, b) => (priorityRank(a) - priorityRank(b)) || (b.duration - a.duration)).slice(0, 8);
-  const personOnBeltEvents = events.filter((event) => ['possible person in conveyor zone', 'possible body on conveyor'].includes(event.signal)).sort((a, b) => a.seconds - b.seconds || b.duration - a.duration);
+  const safetyEvents = events.filter((event) => ['possible person in conveyor zone', 'possible body on conveyor'].includes(event.signal));
+  const personOnBeltEvents = [...safetyEvents].sort((a, b) => a.seconds - b.seconds || b.duration - a.duration);
   const personOnBeltTracks = Object.values(personOnBeltEvents.reduce((groups, event) => {
     const track = event.track || 'Unknown';
     if (!groups[track]) groups[track] = { track, events: [] };
@@ -177,7 +173,6 @@ function App() {
   const windowEvents = events.filter((event) => event.seconds < windowEnd && event.seconds + event.duration >= windowStart);
   const windowTracks = [...new Set(windowEvents.map((event) => event.track).filter((track) => track && track !== '—' && track !== 'Team'))];
   const staffingMismatchEvents = events.filter((event) => event.signal === 'candidate staffing mismatch');
-  const safetyEvents = events.filter((event) => ['possible body on conveyor', 'possible person in conveyor zone'].includes(event.signal));
   const selectedTopicEvents = selectedTopic === 'all' ? [] : topicEvents[selectedTopic];
   const selectedTopicSignals = [...new Set(selectedTopicEvents.map((event) => event.signal))];
   const timelineSeconds = Math.max(1, videoSeconds, latestEventTime);
@@ -198,15 +193,9 @@ function App() {
     setTopicDetailsOpen(true);
     window.setTimeout(() => topicDetailsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
   };
-  const clearAnalysis = () => {
-    setEvents([]); setAnalysisLoaded(false); setVideoValid(false); setVideoUrl('');
-    setCsvDownloadUrl(''); setVideoSeconds(0); setCsvName(''); setSource('');
+  const loadAnalysis = (analysis) => {
     setCsvError(''); setVideoError(''); setSelectedTopic('all'); setActive(null);
     setSelectedSlowdownTrack(null); setTopicDetailsOpen(false); setReviewSecond(0);
-    setScreen('upload');
-  };
-  const loadAnalysis = (analysis) => {
-    clearAnalysis();
     setEvents(analysis.events); setVideoUrl(analysis.video_url);
     setCsvDownloadUrl(analysis.csv_url); setSource(analysis.video_name);
     setCsvName(analysis.csv_name); setVideoSeconds(analysis.duration);
@@ -246,7 +235,7 @@ function App() {
         {screen !== 'upload' && <section className="page-heading"><div><div className="eyebrow">SHIFT INTELLIGENCE <span className="green-pip"/></div><h1>Operations overview</h1><p>Review model-detected events against the annotated video.</p></div><div className="heading-buttons"><button className="button secondary" onClick={() => { setScreen('upload');  }}><FileUp size={15}/> Change files</button><button className="button primary" onClick={() => { setScreen('upload');  }}><Video size={15}/> Load / process video</button></div></section>}
         {screen !== 'upload' && <div className="data-notice"><span className="notice-icon"><Activity size={15}/></span><span>{notice}</span><button onClick={() => setNotice('Signals are estimates from video. Confirm important events before acting.') }><CircleHelp size={15}/></button></div>}
         {videoError && <p className="workspace-error" role="alert">{videoError}</p>}
-{screen === 'upload' || !dataReady ? <Workspace onLoad={loadAnalysis} onClear={clearAnalysis}/> : <>
+{screen === 'upload' || !dataReady ? <Workspace onLoad={loadAnalysis}/> : <>
         <section className="panel worker-activity-panel">
           <div className="panel-heading"><div><div className="eyebrow">01 · ACTIVITY BY MINUTE</div><h2>Detected handling and belt activity</h2><p>Each bar represents one 60-second video window. Select a bar to review that minute.</p></div></div>
           <div className="worker-activity-chart" aria-label="Detected activity by 60-second video window">
@@ -334,7 +323,7 @@ function App() {
         </section>}
 
         <section className="summary-review-grid">
-          <section className="panel summary-card"><div className="eyebrow">STAFFING MISMATCH</div><h2>{staffingMismatchEvents.length} review cues</h2><p>Three or more tracks in the work area with at most one wrist-in-conveyor activity cue. Review timestamps before interpreting staffing needs.</p><button onClick={() => showTopicDetails('resources')}>Open staffing timeline</button></section>
+          <section className="panel summary-card"><div className="eyebrow">STAFFING MISMATCH</div><h2>{staffingMismatchEvents.length} review cues</h2><p>Three or more tracks in the work area with at most one track showing conveyor activity in the same frame. Open an event to see which signals were used.</p><button onClick={() => showTopicDetails('resources')}>Open staffing timeline</button></section>
           <section className="panel summary-card"><div className="eyebrow">SAFETY SUMMARY</div><h2>{safetyEvents.length} conveyor review cues</h2><p>{safetyEvents.reduce((sum, event) => sum + event.duration, 0).toFixed(1)} accumulated track-seconds of foot/body overlap. Overlapping events may describe the same moment.</p><button onClick={() => showTopicDetails('risks')}>Open safety timeline</button></section>
         </section>
         <section className="panel event-panel compact-event-panel" aria-label="Events">

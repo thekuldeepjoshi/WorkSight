@@ -1,28 +1,27 @@
-"""Spawned once for each processing run; no Flask or Streamlit dependency."""
+"""Child process that loads a run, invokes the pipeline, and reports its status."""
 import sys
 from pathlib import Path
 
-from backend.jobs import now
+from backend.jobs import update_run
 from worksight.storage import connect_db, get_video, get_zones
-from WorkSight import process_video
+from worksight.pipeline import process_video
 
 
 def run(run_id, fps):
     def update(done, total):
         with connect_db() as db:
-            db.execute("UPDATE runs SET progress=?,updated_at=? WHERE id=?", (min(0.99, done / max(1, total)), now(), run_id))
+            update_run(db, run_id, progress=min(0.99, done / max(1, total)))
     try:
         with connect_db() as db:
-            db.execute("UPDATE runs SET status='processing',updated_at=? WHERE id=?", (now(), run_id))
+            update_run(db, run_id, status="processing", expected="queued")
         video = get_video(run_id)
         process_video(run_id, Path(video["source_path"]), get_zones(run_id), source_name=video["source_name"],
-                      analysis_fps=fps, enable_hand_landmarks=True, enable_package_detection=True, progress=update)
+                      analysis_fps=fps, progress=update)
         with connect_db() as db:
-            db.execute("UPDATE runs SET status='complete',progress=1,updated_at=? WHERE id=?", (now(), run_id))
+            update_run(db, run_id, status="complete", progress=1)
     except Exception as error:
         with connect_db() as db:
-            db.execute("UPDATE runs SET status='failed',error=?,updated_at=? WHERE id=?", (str(error), now(), run_id))
-            db.execute("UPDATE videos SET status='failed',error=? WHERE id=?", (str(error), run_id))
+            update_run(db, run_id, status="failed", error=str(error))
         raise
 
 

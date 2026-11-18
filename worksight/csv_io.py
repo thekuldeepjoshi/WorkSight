@@ -1,3 +1,5 @@
+# Parses exported event CSV files, including legacy columns, into dashboard-ready event records.
+
 """Portable events CSV parsing. Legacy names and precise numeric seconds supported."""
 import csv
 import math

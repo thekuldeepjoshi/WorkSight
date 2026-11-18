@@ -1,3 +1,5 @@
+# Model loading and MediaPipe hand detection for worksight.pipeline.
+
 """Mandatory model preflight shared by the worker and validation script."""
 
 from worksight.config import ROOT

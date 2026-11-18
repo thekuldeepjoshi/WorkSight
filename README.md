@@ -183,7 +183,7 @@ npm run build --prefix dashboard
 - `backend/`: Flask API, jobs, and worker process
 - `dashboard/`: React + Vite frontend
 - `worksight/`: SQLite, model, CSV, and configuration helpers
-- `WorkSight.py`: video processing and operational rules
+- `worksight/pipeline.py`: video processing, event generation, and evidence export
 - `mcp_server/`: read-only Claude Desktop MCP server
 - `scripts/`: query and model validation utilities
 - `tests/`: automated tests

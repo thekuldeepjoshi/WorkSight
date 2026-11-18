@@ -4,7 +4,6 @@ opencv-contrib-python==4.11.0.86
 opencv-python==4.11.0.86
 numpy>=1.24,<2
 Flask>=3.1,<4
-waitress>=3,<4
 imageio-ffmpeg>=0.8,<0.9
 sentencepiece==0.2.0; python_version < "3.13"
 # MediaPipe Hands currently requires the Protobuf 4 series.

@@ -1,3 +1,5 @@
+# SQLite schema and repository functions for videos, zones, detections, packages, hands, events, and runs.
+
 """SQLite schema and repository helpers. No model imports."""
 
 import hashlib
@@ -152,29 +154,30 @@ def ensure_video(video_id: str, source_name: str, source_path: Path) -> None:
             (video_id, source_name, str(source_path), now),
         )
 
-def save_zone(video_id: str, name: str, points: list[list[float]]) -> None:
-    if name not in {"conveyor", "work_area"}:
-        raise ValueError("Zone must be 'conveyor' or 'work_area'.")
-    if len(points) < 3:
-        raise ValueError("A zone needs at least three points.")
-    if not all(isinstance(p, (list, tuple)) and len(p) == 2
-               and all(isinstance(v, (int, float)) and math.isfinite(v) and 0 <= v <= 1 for v in p)
-               for p in points):
-        raise ValueError("Zone points must be finite normalized coordinates between 0 and 1.")
+def save_zones(video_id: str, zones: dict) -> None:
+    """Validate both polygons and write them in a single transaction."""
+    if not isinstance(zones, dict):
+        raise ValueError("Provide the conveyor and work-area zones.")
+    rows = []
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    for name in ("conveyor", "work_area"):
+        points = zones.get(name)
+        if not isinstance(points, list) or len(points) < 3 or not all(
+            isinstance(point, (list, tuple)) and len(point) == 2
+            and all(isinstance(v, (int, float)) and 0 <= v <= 1 and math.isfinite(v) for v in point)
+            for point in points
+        ):
+            raise ValueError(f"{name} requires at least three normalized points")
+        rows.append((video_id, name, json.dumps(points), now))
     with connect_db() as db:
-        db.execute(
+        db.executemany(
             """INSERT INTO zones (video_id, name, points_json, updated_at)
                VALUES (?, ?, ?, ?)
                ON CONFLICT(video_id, name) DO UPDATE SET
                    points_json = excluded.points_json,
                    updated_at = excluded.updated_at""",
-            (video_id, name, json.dumps(points), now),
+            rows,
         )
-
-def delete_zone(video_id: str, name: str) -> None:
-    with connect_db() as db:
-        db.execute("DELETE FROM zones WHERE video_id = ? AND name = ?", (video_id, name))
 
 def get_zones(video_id: str) -> dict[str, list[list[float]]]:
     with connect_db() as db:
@@ -201,67 +204,68 @@ def get_video(video_id: str) -> dict | None:
         row = db.execute("SELECT * FROM videos WHERE id = ?", (video_id,)).fetchone()
     return dict(row) if row else None
 
-def get_events(video_id: str) -> list[dict]:
-    with connect_db() as db:
-        rows = db.execute(
-            """SELECT id, track_id, event_type, start_ms, end_ms, duration_ms,
-                      evidence_frame, confidence, details_json
-               FROM events WHERE video_id = ? ORDER BY start_ms""",
-            (video_id,),
-        ).fetchall()
-    events = [dict(row) for row in rows]
-    for event in events:
-        event["details"] = json.loads(event.pop("details_json"))
-    return events
+def open_readonly(path: Path) -> sqlite3.Connection:
+    if not path.is_file():
+        raise FileNotFoundError(f"WorkSight database not found: {path}")
+    uri = f"{path.resolve().as_uri()}?mode=ro"
+    connection = sqlite3.connect(uri, uri=True)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA query_only = ON")
+    return connection
 
-def get_summary(video_id: str) -> dict:
-    with connect_db() as db:
-        tracks = db.execute(
-            """SELECT COUNT(DISTINCT track_id) FROM detections
-               WHERE video_id = ? AND track_id IS NOT NULL""",
-            (video_id,),
-        ).fetchone()[0]
-        detections = db.execute(
-            "SELECT COUNT(*) FROM detections WHERE video_id = ?", (video_id,)
-        ).fetchone()[0]
-        belt = db.execute(
-            """SELECT COUNT(*), COALESCE(SUM(duration_ms), 0)
-               FROM events WHERE video_id = ? AND event_type = 'possible_belt_interaction'""",
-            (video_id,),
-        ).fetchone()
-        hand_belt = db.execute(
-            """SELECT COUNT(*) FROM events
-               WHERE video_id = ? AND event_type = 'possible_hand_belt_proximity'""",
-            (video_id,),
-        ).fetchone()[0]
-        person_in_conveyor = db.execute(
-            """SELECT COUNT(*) FROM events
-               WHERE video_id = ? AND event_type = 'possible_person_in_conveyor_zone'""",
-            (video_id,),
-        ).fetchone()[0]
-        hand_observations = db.execute(
-            "SELECT COUNT(*) FROM hand_detections WHERE video_id = ?", (video_id,)
-        ).fetchone()[0]
-        package_observations = db.execute(
-            "SELECT COUNT(*) FROM package_detections WHERE video_id = ?", (video_id,)
-        ).fetchone()[0]
-        conveyor_package_observations = db.execute(
-            "SELECT COUNT(*) FROM package_detections WHERE video_id = ? AND in_conveyor_zone = 1", (video_id,)
-        ).fetchone()[0]
-        dwell = db.execute(
-            """SELECT COALESCE(SUM(duration_ms), 0)
-               FROM events WHERE video_id = ? AND event_type = 'work_area_presence'""",
-            (video_id,),
-        ).fetchone()[0]
-    return {
-        "tracked_people": tracks,
-        "observations": detections,
-        "belt_interactions": belt[0],
-        "belt_interaction_seconds": belt[1] / 1000,
-        "hand_belt_proximity_events": hand_belt,
-        "person_in_conveyor_zone_events": person_in_conveyor,
-        "hand_observations": hand_observations,
-        "package_observations": package_observations,
-        "conveyor_package_observations": conveyor_package_observations,
-        "work_area_seconds": dwell / 1000,
-    }
+
+def table_exists(db: sqlite3.Connection, name: str) -> bool:
+    return db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+    ).fetchone() is not None
+
+
+def frame_counts(db: sqlite3.Connection, video_id: str) -> list[sqlite3.Row]:
+    """Count same-frame presence and wrist or fingertip cues for each video."""
+    hand_candidate_sql = "0"
+    if table_exists(db, "hand_detections"):
+        hand_candidate_sql = """EXISTS (
+            SELECT 1 FROM hand_detections h
+            WHERE h.video_id = d.video_id AND h.frame_index = d.frame_index
+              AND h.track_id = d.track_id AND h.fingertips_in_conveyor = 1
+        )"""
+    return db.execute(
+        f"""SELECT d.frame_index, d.timestamp_ms,
+                   COUNT(DISTINCT CASE WHEN d.in_work_area = 1 THEN d.track_id END) AS present_count,
+                   COUNT(DISTINCT CASE WHEN d.wrist_on_belt = 1 OR {hand_candidate_sql}
+                                       THEN d.track_id END) AS candidate_active_count
+            FROM detections d
+            WHERE d.video_id = ? AND d.track_id IS NOT NULL
+            GROUP BY d.frame_index, d.timestamp_ms ORDER BY d.timestamp_ms""",
+        (video_id,),
+    ).fetchall()
+
+
+def flush_evidence(db, observation_batch, hand_batch, package_batch, event_batch, *, final=False):
+    """Write ready batches during processing and all remaining rows at the end."""
+    batches = (
+        (observation_batch, 500,
+         """INSERT INTO detections
+            (video_id, frame_index, timestamp_ms, track_id, confidence,
+            bbox_json, keypoints_json, in_work_area, wrist_on_belt)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"""),
+        (hand_batch, 500,
+         """INSERT INTO hand_detections
+            (video_id, frame_index, timestamp_ms, track_id, handedness,
+            handedness_confidence, landmarks_json, fingertips_in_conveyor)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)"""),
+        (package_batch, 500,
+         """INSERT INTO package_detections
+            (video_id, frame_index, timestamp_ms, track_id, label,
+            confidence, bbox_json, in_conveyor_zone)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)"""),
+        (event_batch, 1,
+         """INSERT INTO events
+            (video_id, track_id, event_type, start_ms, end_ms, duration_ms,
+            evidence_frame, confidence, details_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"""),
+    )
+    for rows, batch_size, statement in batches:
+        if rows and (final or len(rows) >= batch_size):
+            db.executemany(statement, rows)
+            rows.clear()

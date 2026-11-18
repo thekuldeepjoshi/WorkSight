@@ -1,5 +1,6 @@
+# Flask application factory: registers API routes, initializes SQLite, serves the React build, and owns the Jobs controller from backend.jobs.
+
 """Single local web application serving the API and production React build."""
-from pathlib import Path
 import os
 import atexit
 from flask import Flask, jsonify, send_from_directory

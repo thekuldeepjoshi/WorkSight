@@ -1,3 +1,5 @@
+# Browser acceptance test: launches the Flask app and uses Playwright to verify upload, dashboard navigation, and timestamp seeking.
+
 """Real Chrome acceptance checks. Run with WORKSIGHT_BROWSER_TESTS=1."""
 import os
 import subprocess

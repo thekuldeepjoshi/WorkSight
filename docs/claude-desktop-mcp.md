@@ -18,18 +18,17 @@ Add this server to Claude Desktop's configuration file:
 {
   "mcpServers": {
     "worksight-ops": {
-      "command": "/Users/kuldeep/Interview prep/WorkSight/.venv-intel/bin/python",
-      "args": ["-m", "mcp_server.worksight_server"],
-      "cwd": "/Users/kuldeep/Interview prep/WorkSight",
+      "command": "/absolute/path/to/WorkSight/.venv-intel/bin/python",
+      "args": ["/absolute/path/to/WorkSight/mcp_server/worksight_server.py"],
       "env": {
-        "WORKSIGHT_DB": "/Users/kuldeep/Interview prep/WorkSight/data/worksight.sqlite3"
+        "WORKSIGHT_DB": "/absolute/path/to/WorkSight/data/worksight.sqlite3"
       }
     }
   }
 }
 ```
 
-Restart Claude Desktop. Ask Claude to list the available WorkSight analyses,
-then ask questions about the selected completed analysis. The server opens
-SQLite in read-only mode through `scripts/query_worksight.py`; it cannot change
-the database or process video.
+Replace `/absolute/path/to/WorkSight` with your project directory and restart
+Claude Desktop. Ask Claude to list the available WorkSight analyses and select
+a completed run. The MCP server and CLI use the same SQLite queries. MCP opens
+the database in read-only mode.

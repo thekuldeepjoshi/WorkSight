@@ -1,7 +1,7 @@
 # WorkSight architecture
 
 React is the only interface. Flask serves the built frontend and JSON API locally.
-The existing `WorkSight.process_video()` function remains the processing entry point.
+The worker calls `worksight.pipeline.process_video()` to run an analysis.
 
 ```mermaid
 flowchart TD
@@ -27,9 +27,9 @@ flowchart TD
 - `backend/worker.py`: invokes the CV pipeline; reports exceptions to SQLite.
 - `worksight/storage.py`: SQLite schema and repository functions.
 - `worksight/vision.py`: mandatory model preflight and cropped MediaPipe inference.
-- `worksight/media.py`: inspection, hashing and H.264 conversion.
+- `worksight/media.py`: video inspection and H.264 conversion.
 - `worksight/rules.py`: existing zone and package rules.
-- `WorkSight.py`: frame loop, event intervals, annotations and CSV export.
+- `worksight/pipeline.py`: frame loop, event intervals, annotations and CSV export.
 - `dashboard/src/Workspace.jsx`: upload/import workflow and SVG zone editor.
 - `dashboard/src/main.jsx`: existing reporting UI, slowdown ranking and timelines.
 
@@ -95,4 +95,7 @@ with nearby person tracks. Workers can receive new IDs after occlusion. A packag
 track is not a completed unload. Model availability and zero detections are distinct.
 Hands/packages can be missed, even when models initialise correctly. The validation
 script fails its evidence check if representative landmarks/tracks are absent.
-Operational rules and their existing thresholds remain unchanged.
+New staffing mismatch events and Claude queries both count same-frame
+wrist or fingertip cues in the conveyor zone. Older exports keep their
+recorded events. Fixed-window queries and persisted event intervals use
+different time groupings.

@@ -1,3 +1,5 @@
+# Flask API endpoints for uploads, zones, analysis jobs, imported files, and output downloads.
+
 """HTTP endpoints for uploads, editable zones, jobs and portable analyses."""
 import io
 import json
@@ -8,7 +10,7 @@ from flask import Blueprint, current_app, jsonify, request, send_file
 from werkzeug.utils import secure_filename
 
 from worksight.config import DATA_DIR, ROOT, UPLOADS_DIR
-from worksight.storage import connect_db, ensure_video, get_video, get_zones, list_videos, save_zone
+from worksight.storage import ensure_video, get_video, get_zones, list_videos, save_zones
 from worksight.media import inspect_video
 from worksight.csv_io import read_events
 
@@ -100,14 +102,7 @@ def preview_frame(video_id):
 def zones(video_id):
     required_video(video_id)
     if request.method == "PUT":
-        data = request.get_json()
-        # Validate both polygons before writing either.
-        for name in ("conveyor", "work_area"):
-            points = data.get(name)
-            if not isinstance(points, list) or len(points) < 3 or not all(isinstance(p, list) and len(p) == 2 and all(isinstance(v, (int, float)) and math.isfinite(v) and 0 <= v <= 1 for v in p) for p in points):
-                raise ValueError(f"{name} requires at least three normalized points")
-        for name in ("conveyor", "work_area"):
-            save_zone(video_id, name, data[name])
+        save_zones(video_id, request.get_json())
     return jsonify(get_zones(video_id))
 
 

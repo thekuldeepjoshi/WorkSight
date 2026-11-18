@@ -1,11 +1,13 @@
+# Unit tests for package activity and staffing rules.
+
 import unittest
 
-from WorkSight import _package_activity_signals, _staffing_pressure
+from worksight.rules import package_activity_signals, staffing_pressure
 
 
 class PackageActivityRuleTests(unittest.TestCase):
-    def classify(self, *, count=0, carrying=False, hand=False, approaching=False, enabled=True):
-        return _package_activity_signals(enabled, count, carrying, hand, approaching)
+    def classify(self, *, count=0, carrying=False, hand=False, approaching=False):
+        return package_activity_signals(count, carrying, hand, approaching)
 
     def test_available_only_when_belt_is_empty_and_worker_is_not_carrying(self):
         result = self.classify()
@@ -30,16 +32,11 @@ class PackageActivityRuleTests(unittest.TestCase):
         self.assertFalse(self.classify(count=4, hand=True)["candidate_waiting_full_belt"])
         self.assertFalse(self.classify(count=4, carrying=True)["candidate_waiting_full_belt"])
 
-    def test_package_signals_are_off_when_package_detection_is_disabled(self):
-        result = self.classify(count=5, enabled=False)
-        self.assertFalse(any(result.values()))
-
-
 class StaffingPressureRuleTests(unittest.TestCase):
     def test_requires_at_least_three_packages_and_two_active_workers(self):
-        self.assertTrue(_staffing_pressure(3, 2))
-        self.assertFalse(_staffing_pressure(2, 2))
-        self.assertFalse(_staffing_pressure(3, 1))
+        self.assertTrue(staffing_pressure(3, 2))
+        self.assertFalse(staffing_pressure(2, 2))
+        self.assertFalse(staffing_pressure(3, 1))
 
 
 if __name__ == "__main__":

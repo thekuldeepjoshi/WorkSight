@@ -1,3 +1,6 @@
+// Processing/import workspace: uploads videos and CSVs, edits SVG zones, starts jobs, and controls pause/resume/cancel.
+// It calls the Flask API from backend/routes.py and passes completed analyses to main.jsx.
+
 import React, { useEffect, useRef, useState } from 'react';
 
 export async function api(path, options = {}) {
@@ -7,7 +10,7 @@ export async function api(path, options = {}) {
   return data;
 }
 
-export default function Workspace({ onLoad, onClear }) {
+export default function Workspace({ onLoad }) {
   const [mode, setMode] = useState('process');
   const [videoFile, setVideoFile] = useState(null);
   const [csvFile, setCsvFile] = useState(null);
@@ -62,7 +65,10 @@ export default function Workspace({ onLoad, onClear }) {
   }
   const processing = job && ['queued', 'processing'].includes(job.status);
   return <section className="panel workspace-panel">
-    <div className="workspace-actions"><button className={`button ${mode === 'process' ? 'primary' : 'secondary'}`} onClick={() => setMode('process')}>Process new video</button><button className={`button ${mode === 'import' ? 'primary' : 'secondary'}`} onClick={() => setMode('import')}>Load Analysis</button><button className="small-button" onClick={() => { onClear(); setVideo(null); setVideoFile(null); setCsvFile(null); setError(''); }}>Clear Analysis</button></div>
+    <div className="workspace-actions">
+      <button className={`button ${mode === 'process' ? 'primary' : 'secondary'}`} onClick={() => setMode('process')}>Process new video</button>
+      <button className={`button ${mode === 'import' ? 'primary' : 'secondary'}`} onClick={() => setMode('import')}>Load Analysis</button>
+    </div>
     {mode === 'import' ? <div className="workspace-form"><h2>Load a video and events CSV</h2><p>Select the matching files. A valid CSV with zero events is supported.</p><label>Video <input aria-label="Analysis video" type="file" accept=".mp4,.mov,.webm" onChange={e => setVideoFile(e.target.files[0])}/></label><label>Events CSV <input aria-label="Events CSV" type="file" accept=".csv" onChange={e => setCsvFile(e.target.files[0])}/></label><button className="button primary" disabled={busy || !videoFile || !csvFile} onClick={() => perform(async () => { const body = new FormData(); body.append('video', videoFile); body.append('csv', csvFile); onLoad(await api('/imports', { method: 'POST', body })); })}>{busy ? 'Loading…' : 'Load Analysis'}</button></div>
       : <div className="workspace-form"><h2>Process an unloading video</h2><label>Original video <input type="file" accept=".mp4,.mov,.avi,.webm" onChange={e => { setVideoFile(e.target.files[0]); setVideo(null); }}/></label><button className="button secondary" disabled={!videoFile || busy || processing} onClick={() => perform(async () => { const body = new FormData(); body.append('video', videoFile); const result = await api('/videos', { method: 'POST', body }); setVideo(result); setZones({ conveyor: [], work_area: [] }); setSecond(0); })}>{busy ? 'Uploading…' : 'Upload and draw zones'}</button>
       {video && <><label>Preview time (seconds)<input type="number" min="0" max={Math.max(0, video.duration - 1)} value={second} onChange={e => setSecond(Math.max(0, Number(e.target.value)))}/></label><div className="workspace-actions"><button className={`button ${zone === 'conveyor' ? 'primary' : 'secondary'}`} onClick={() => setZone('conveyor')}>Conveyor · red</button><button className={`button ${zone === 'work_area' ? 'primary' : 'secondary'}`} onClick={() => setZone('work_area')}>Working area · blue</button><button className="small-button" onClick={() => setZones({ ...zones, [zone]: zones[zone].slice(0, -1) })}>Undo point</button><button className="small-button" onClick={() => setZones({ ...zones, [zone]: [] })}>Clear zone</button></div><p>Click to add small points. Drag existing points to adjust. At least three points per polygon.</p>

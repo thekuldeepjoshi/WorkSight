@@ -1,18 +1,19 @@
+# Backend integration tests: exercise Flask routes, SQLite persistence, imports, ranges, and job guards from backend.app and backend.jobs.
+
 import io
-import json
-import sqlite3
+import signal
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import cv2
 import numpy as np
 from backend.app import create_app
-from backend import routes
-from worksight import storage
+from backend import jobs, routes
+from scripts.query_worksight import imbalances
+from worksight import pipeline, storage
 from worksight.csv_io import read_events
-from WorkSight import _write_events_csv
 
 
 class BackendTests(unittest.TestCase):
@@ -50,6 +51,9 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(self.client.put(f'/api/videos/{video_id}/zones', json={'conveyor': points}).status_code, 400)
         self.assertEqual(self.client.get(f'/api/videos/{video_id}/zones').json, {})
         self.assertEqual(self.client.put(f'/api/videos/{video_id}/zones', json={'conveyor': points, 'work_area': points}).status_code, 200)
+        invalid = {'conveyor': [[.1, .1], [.8, .1], [.8, .8]], 'work_area': [[2, 0], [1, 0], [1, 1]]}
+        self.assertEqual(self.client.put(f'/api/videos/{video_id}/zones', json=invalid).status_code, 400)
+        self.assertEqual(self.client.get(f'/api/videos/{video_id}/zones').json, {'conveyor': points, 'work_area': points})
         preview = self.client.get(f'/api/videos/{video_id}/frame')
         self.assertEqual(preview.mimetype, 'image/jpeg')
         preview.close()
@@ -82,10 +86,10 @@ class BackendTests(unittest.TestCase):
         storage.ensure_video('v', 'test.mp4', self.clip)
         target = self.root / 'export.csv'
         with storage.connect_db() as db:
-            _write_events_csv(db, 'v', target)
+            pipeline._write_events_csv(db, 'v', target)
             self.assertEqual(read_events(target), [])
             db.execute("INSERT INTO events VALUES (1,'v',7,'candidate_low_activity',125,1025,1000,1,.9,'{}')")
-            _write_events_csv(db, 'v', target)
+            pipeline._write_events_csv(db, 'v', target)
             event = read_events(target)[0]
             self.assertEqual(event['seconds'], .125)
             self.assertEqual(event['duration'], 1)
@@ -94,8 +98,7 @@ class BackendTests(unittest.TestCase):
     def test_run_history_and_single_job(self):
         storage.ensure_video('source', 'test.mp4', self.clip)
         points = [[0, 0], [1, 0], [1, 1]]
-        for name in ('conveyor', 'work_area'):
-            storage.save_zone('source', name, points)
+        storage.save_zones('source', {'conveyor': points, 'work_area': points})
         with patch('backend.jobs.subprocess.Popen') as popen, patch('backend.jobs.threading.Thread.start'), patch('backend.jobs.DATA_DIR', self.root):
             popen.return_value.poll.return_value = None
             first = self.client.post('/api/videos/source/runs', json={'analysis_fps': 5})
@@ -107,20 +110,52 @@ class BackendTests(unittest.TestCase):
             self.assertNotEqual(first.json['id'], second.json['id'])
             with storage.connect_db() as db:
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0], 2)
+                jobs.update_run(db, first.json['id'], status='processing')
+                jobs.update_run(db, second.json['id'], status='processing')
+            popen.return_value.poll.return_value = None
+            self.assertEqual(self.client.post(f"/api/runs/{first.json['id']}/pause").status_code, 400)
+            popen.return_value.send_signal.assert_not_called()
+            path = f"/api/runs/{second.json['id']}"
+            self.assertEqual(self.client.post(path + '/pause').json['status'], 'paused')
+            popen.return_value.send_signal.assert_called_once_with(signal.SIGSTOP)
+            self.assertEqual(self.client.post(path + '/resume').json['status'], 'processing')
+            self.assertEqual(self.client.post(path + '/pause').json['status'], 'paused')
+            self.assertEqual(self.client.post(path + '/cancel').json['status'], 'cancelled')
+            self.assertEqual(storage.get_video(second.json['id'])['status'], 'cancelled')
+
+    def test_staffing_events_and_queries_share_fingertip_evidence(self):
+        storage.ensure_video('v', 'test.mp4', self.clip)
+        with storage.connect_db() as db:
+            for frame in range(10):
+                for track in (1, 2, 3):
+                    db.execute(
+                        "INSERT INTO detections VALUES (NULL,'v',?,?,?,.9,'[]','[]',1,?)",
+                        (frame, frame * 100, track, int(track == 1)),
+                    )
+                db.execute(
+                    "INSERT INTO hand_detections VALUES (NULL,'v',?,?,2,'left',.9,'[]',1)",
+                    (frame, frame * 100),
+                )
+            pipeline._record_staffing_mismatch_events(db, 'v', 100)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM events").fetchone()[0], 0)
+            self.assertEqual(imbalances(db, storage.get_video('v'), min_frames=1)['windows'], [])
+            db.execute("DELETE FROM hand_detections")
+            pipeline._record_staffing_mismatch_events(db, 'v', 100)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM events").fetchone()[0], 1)
+            self.assertEqual(imbalances(db, storage.get_video('v'), min_frames=1)['windows'][0]['qualifying_frames'], 10)
 
     def test_unknown_video(self):
         self.assertEqual(self.client.get('/api/videos/missing/zones').status_code, 404)
         self.assertEqual(self.client.get('/api/imports/' + '0' * 32).status_code, 404)
 
     def test_failed_model_preflight_preserves_prior_evidence(self):
-        import WorkSight
         storage.ensure_video('old', 'test.mp4', self.clip)
         with storage.connect_db() as db:
             db.execute("INSERT INTO events VALUES (1,'old',7,'candidate_low_activity',0,900,1000,0,.9,'{}')")
         points = [[0, 0], [1, 0], [1, 1]]
-        with patch.object(WorkSight, 'load_models', side_effect=RuntimeError('Missing mandatory model')):
+        with patch.object(pipeline, 'load_models', side_effect=RuntimeError('Missing mandatory model')):
             with self.assertRaisesRegex(RuntimeError, 'Missing mandatory model'):
-                WorkSight.process_video('old', self.clip, {'conveyor': points, 'work_area': points})
+                pipeline.process_video('old', self.clip, {'conveyor': points, 'work_area': points})
         with storage.connect_db() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE video_id='old'").fetchone()[0], 1)
 

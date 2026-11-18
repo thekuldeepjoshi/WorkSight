@@ -1,19 +1,10 @@
-"""Video inspection, hashing, and browser-compatible encoding."""
+"""Video inspection and browser-compatible encoding."""
 
-import hashlib
 import math
 import subprocess
 from pathlib import Path
 
 import cv2
-
-
-def hash_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as video_file:
-        for chunk in iter(lambda: video_file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def inspect_video(path: Path) -> dict:
