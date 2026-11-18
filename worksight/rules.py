@@ -49,6 +49,7 @@ def person_belt_signals(pose, footpoint, body_center, belt_polygon, inner_belt_p
             continue
         wrist_x, wrist_y = pose[wrist_index][:2]
         wrist_confidence = pose[wrist_index][2] if len(pose[wrist_index]) > 2 else 0
+        # Wrist pose confidence: accepts 0.25 through 1.00 for belt-interaction evidence.
         if wrist_confidence >= 0.25 and inside_zone(
             (float(wrist_x), float(wrist_y)), belt_polygon
         ):
@@ -58,10 +59,12 @@ def person_belt_signals(pose, footpoint, body_center, belt_polygon, inner_belt_p
             continue
         ankle_x, ankle_y = pose[ankle_index][:2]
         ankle_confidence = pose[ankle_index][2] if len(pose[ankle_index]) > 2 else 0
+        # Ankle pose confidence: accepts 0.45 through 1.00 for conveyor-zone evidence.
         if ankle_confidence >= 0.45:
             point = (float(ankle_x), float(ankle_y))
             lower_body_points.append(point)
     for lower_index in (13, 14):
+        # Knee pose confidence: rejects below 0.45 and accepts 0.45 through 1.00.
         if lower_index >= len(pose) or pose[lower_index][2] < 0.45:
             continue
         lower_body_points.append((float(pose[lower_index][0]), float(pose[lower_index][1])))
@@ -70,6 +73,7 @@ def person_belt_signals(pose, footpoint, body_center, belt_polygon, inner_belt_p
     inner_ankles = []
     torso_or_knee_in_inner_zone = False
     for body_index in (11, 12, 13, 14, 15, 16):
+        # Body pose confidence: rejects below 0.50 and accepts 0.50 through 1.00 for the stronger safety cue.
         if body_index >= len(pose) or pose[body_index][2] < 0.5:
             continue
         point = (float(pose[body_index][0]), float(pose[body_index][1]))
@@ -97,6 +101,7 @@ def _hand_owner(wrist, people):
         if not (x1 - 12 <= wrist_x <= x2 + 12 and y1 - 12 <= wrist_y <= y2 + 12):
             continue
         pose = person["pose"]
+        # Wrist pose confidence: accepts 0.20 through 1.00 when matching a detected hand to a person.
         wrist_distances = [
             math.hypot(wrist_x - pose[i][0], wrist_y - pose[i][1])
             for i in (9, 10) if i < len(pose) and len(pose[i]) > 2 and pose[i][2] >= 0.2
@@ -172,6 +177,7 @@ def evaluate_frame(people, packages, hands, zones, frame_size, history, *,
         x1, y1, x2, y2 = person["bbox"]
         pose = person["pose"]
         worker_height = y2 - y1
+        # Wrist pose confidence: accepts 0.20 through 1.00 for package-to-hand association.
         wrist_points = [pose[i][:2] for i in (9, 10) if i < len(pose) and pose[i][2] >= 0.2]
         hand_points = [point for hand in hands if hand["track_id"] == track_id for point in hand["points"]]
         carrying = False
@@ -239,6 +245,7 @@ def evaluate_frame(people, packages, hands, zones, frame_size, history, *,
                 continue
             pose = person["pose"]
             distance_limit = max(30.0, (person["bbox"][3] - person["bbox"][1]) * 0.18)
+            # Wrist pose confidence: accepts 0.20 through 1.00 for the package-throwing proximity cue.
             if any(
                 math.hypot(x - pose[i][0], y - pose[i][1]) < distance_limit
                 for i in (9, 10) if i < len(pose) and pose[i][2] >= 0.2

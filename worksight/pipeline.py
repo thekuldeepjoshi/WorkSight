@@ -53,7 +53,6 @@ def _record_staffing_mismatch_events(
     state = None
 
     def insert_state(item):
-        """Write one sustained staffing mismatch interval."""
         duration_ms = item["last_ms"] - item["start_ms"] + frame_interval_ms
         if duration_ms < 1000:
             return
@@ -155,6 +154,7 @@ def _insert_event(
 
 # Main pipeline entry point: validates input, samples frames at analysis_fps, runs all models, tracks signals, writes evidence, and finalizes outputs.
 # Dependencies: OpenCV reads/writes video; worksight.vision supplies YOLO/MediaPipe; worksight.rules supplies zone/rule helpers; worksight.storage supplies SQLite.
+# Person detection confidence uses 0.00-1.00; the default accepts boxes from 0.25 to the maximum 1.00.
 def process_video(
     video_id: str,
     source_path: Path,
@@ -318,8 +318,15 @@ def process_video(
 
             if frame_index % analysis_stride == 0:
                 timestamp_ms = round(frame_index * 1000 / fps)
-                result, people = track_objects(pose_model, frame, confidence=confidence)
-                _, packages = track_objects(package_model, frame, confidence=0.12, iou=0.45, imgsz=960)
+                result, people = track_objects(
+                    pose_model, frame,
+                    confidence=confidence,  # Person/box confidence: accepts the configured minimum (default 0.25) through 1.00.
+                )
+                _, packages = track_objects(
+                    package_model, frame,
+                    confidence=0.12,  # Package/box confidence: accepts 0.12 through the maximum 1.00.
+                    iou=0.45, imgsz=960,
+                )
                 hands = detect_hands(hands_model, frame, people)
 
                 signals, belt_package_count = evaluate_frame(

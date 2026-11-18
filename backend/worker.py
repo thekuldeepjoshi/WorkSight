@@ -10,7 +10,6 @@ from worksight.pipeline import process_video
 def run(run_id, fps):
     """Process one video run and save its final status in SQLite."""
     def update(done, total):
-        """Store processing progress after each completed frame batch."""
         with connect_db() as db:
             update_run(db, run_id, progress=min(0.99, done / max(1, total)))
     try:

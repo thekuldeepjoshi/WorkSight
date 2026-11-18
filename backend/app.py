@@ -26,7 +26,6 @@ def create_app(testing=False):
 
     @app.errorhandler(Exception)
     def error_response(error):
-        """Return API errors as JSON instead of an HTML error page."""
         code = error.code if isinstance(error, HTTPException) else 404 if isinstance(error, LookupError) else 400 if isinstance(error, ValueError) else 500
         if code == 500:
             app.logger.exception("Request failed")
@@ -35,7 +34,6 @@ def create_app(testing=False):
     @app.get("/")
     @app.get("/<path:filename>")
     def frontend(filename="index.html"):
-        """Serve the built React app and support client-side routes."""
         if filename.startswith("api/"):
             return jsonify(error="Unknown API endpoint"), 404
         dist = ROOT / "dashboard" / "dist"

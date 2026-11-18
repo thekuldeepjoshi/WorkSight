@@ -17,7 +17,6 @@ from worksight.csv_io import read_events, write_events_csv
 
 
 class BackendTests(unittest.TestCase):
-    """Check API, database, import, job, and export behaviour."""
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

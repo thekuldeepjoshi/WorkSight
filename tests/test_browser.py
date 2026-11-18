@@ -13,7 +13,6 @@ from urllib.request import urlopen
 
 @unittest.skipUnless(os.environ.get('WORKSIGHT_BROWSER_TESTS') == '1', 'Opt-in real browser acceptance test')
 class BrowserTests(unittest.TestCase):
-    """Check the main upload and evidence-seeking flow in a real browser."""
     def test_import_replace_empty_and_seek(self):
         import cv2
         import numpy as np

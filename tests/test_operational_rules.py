@@ -6,10 +6,7 @@ from worksight.rules import package_activity_signals, staffing_pressure
 
 
 class PackageActivityRuleTests(unittest.TestCase):
-    """Check that package evidence creates the expected worker cues."""
-
     def classify(self, *, count=0, carrying=False, hand=False, approaching=False):
-        """Call the rule with readable test defaults."""
         return package_activity_signals(count, carrying, hand, approaching)
 
     def test_available_only_when_belt_is_empty_and_worker_is_not_carrying(self):
@@ -36,7 +33,6 @@ class PackageActivityRuleTests(unittest.TestCase):
         self.assertFalse(self.classify(count=4, carrying=True)["candidate_waiting_full_belt"])
 
 class StaffingPressureRuleTests(unittest.TestCase):
-    """Check the minimum package and active-worker thresholds."""
     def test_requires_at_least_three_packages_and_two_active_workers(self):
         self.assertTrue(staffing_pressure(3, 2))
         self.assertFalse(staffing_pressure(2, 2))

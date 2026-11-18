@@ -20,7 +20,8 @@ def load_models(pose_name="yolo26n-pose.pt"):
         packages.set_classes(["box", "package", "carton", "parcel"])
         hands = mp.solutions.hands.Hands(
             static_image_mode=True, max_num_hands=8, model_complexity=1,
-            min_detection_confidence=0.3, min_tracking_confidence=0.3,
+            min_detection_confidence=0.3,  # MediaPipe hand detection confidence: accepts 0.30 through 1.00.
+            min_tracking_confidence=0.3,  # MediaPipe hand tracking confidence: accepts 0.30 through 1.00.
         )
         return pose, hands, packages
     except Exception as error:
@@ -31,8 +32,8 @@ def load_models(pose_name="yolo26n-pose.pt"):
 
 def track_objects(model, frame, *, confidence, **options):
     """Detect objects and keep a stable track ID between video frames."""
-    """Run YOLO with ByteTrack and unpack boxes, track IDs, and any pose points."""
     result = model.track(
+        # YOLO confidence is 0.00-1.00; callers choose the minimum accepted box score.
         frame, persist=True, tracker="bytetrack.yaml", conf=confidence,
         verbose=False, **options,
     )[0]
@@ -41,7 +42,7 @@ def track_objects(model, frame, *, confidence, **options):
         return result, []
 
     coordinates = boxes.xyxy.cpu().tolist()
-    scores = boxes.conf.cpu().tolist()
+    scores = boxes.conf.cpu().tolist()  # Accepted YOLO box confidence, from the caller's minimum through 1.00.
     track_ids = boxes.id.int().cpu().tolist() if boxes.id is not None else [None] * len(boxes)
     class_ids = boxes.cls.int().cpu().tolist()
     poses = result.keypoints.data.cpu().tolist() if result.keypoints is not None else []
@@ -60,7 +61,6 @@ def track_objects(model, frame, *, confidence, **options):
 
 def detect_hands(model, frame, people):
     """Find hand landmarks inside each visible person's bounding box."""
-    """Find hands in worker and wrist crops and map them back to the full frame."""
     height, width = frame.shape[:2]
     hands = []
     wrists = []
@@ -70,6 +70,7 @@ def detect_hands(model, frame, people):
         crops = [(x1 - pad, y1 - pad, x2 + pad, y2 + pad)]
         for index in (9, 10):
             pose = person["pose"]
+            # Wrist keypoint confidence: accepts 0.25 through 1.00 before creating a hand-search crop.
             if index < len(pose) and pose[index][2] >= .25:
                 x, y = pose[index][:2]
                 radius = max(35, (y2 - y1) * .18)
@@ -101,6 +102,7 @@ def detect_hands(model, frame, people):
                     "points": points,
                     "landmarks": [[round(x, 6), round(y, 6)] for x, y in normalized],
                     "handedness": label.label if label else "unknown",
+                    # MediaPipe handedness confidence ranges from 0.00 to 1.00; it labels the hand but does not filter it.
                     "confidence": float(label.score) if label else 0.0,
                 })
     return hands

@@ -60,7 +60,6 @@ class Jobs:
             process.wait()
 
     def recover(self):
-        """Mark jobs interrupted by a server restart as failed."""
         # Called once by the single local server at startup; interrupted runs can be rerun.
         with connect_db() as db:
             interrupted = db.execute("SELECT id FROM runs WHERE status IN (?, ?, ?)", ACTIVE_STATUSES).fetchall()

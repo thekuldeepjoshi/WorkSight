@@ -13,7 +13,6 @@ def read_events(path):
         reader = csv.DictReader(source)
         names = {name.strip().lower(): name for name in (reader.fieldnames or [])}
         def column(*aliases):
-            """Find a CSV column while allowing older header names."""
             return next((names[a] for a in aliases if a in names), None)
         time = column("start seconds", "start timestamp in seconds", "time", "timestamp", "start")
         signal = column("signal", "event type", "event_type")
@@ -30,13 +29,14 @@ def read_events(path):
                 seconds = float(raw) if len(parts) == 1 else sum(float(p) * 60 ** i for i, p in enumerate(reversed(parts)))
                 length = float(row[end]) - seconds if end else float(row[duration])
                 score = float(row[confidence].replace("%", ""))
+                # Imported confidence may be 0-100%; convert it to the application's 0.00-1.00 scale.
                 if "%" in row[confidence] or score > 1:
                     score /= 100
                 kind = row[signal].strip().lower().replace("_", " ")
+                # Stored event confidence must stay between the minimum 0.00 and maximum 1.00.
                 if not kind or not all(math.isfinite(n) for n in (seconds, length, score)) or seconds < 0 or length <= 0 or not 0 <= score <= 1:
                     raise ValueError("Invalid time, duration, signal, or confidence")
                 def optional(name):
-                    """Read an optional CSV value as an empty string when absent."""
                     return row.get(column(name), "") or ""
                 events.append(dict(id=len(events) + 1, seconds=seconds, duration=length,
                     label=f"{int(seconds)//60:02d}:{int(seconds)%60:02d}",
